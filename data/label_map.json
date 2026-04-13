@@ -1,0 +1,92 @@
+{
+  "Ear Infections": "Ear Conditions",
+  "Diseases of the ear or mastoid process": "Ear Conditions",
+
+  "Skin Irritations": "Skin Conditions",
+  "Diseases of the skin": "Skin Conditions",
+  "atopic dermatitis": "Skin Conditions",
+  "feline atopy": "Skin Conditions",
+  "psychogenic alopecia": "Skin Conditions",
+
+  "Mobility Problems": "Musculoskeletal Conditions",
+  "Diseases of the musculoskeletal system or connective tissue": "Musculoskeletal Conditions",
+  "hip dysplasia": "Musculoskeletal Conditions",
+  "intervertebral disc disease": "Musculoskeletal Conditions",
+  "laminitis": "Musculoskeletal Conditions",
+  "osteoarthritis": "Musculoskeletal Conditions",
+  "deep digital flexor tendon extension": "Musculoskeletal Conditions",
+
+  "Certain infectious or parasitic diseases": "Infectious and Parasitic Diseases",
+  "Parasites": "Infectious and Parasitic Diseases",
+  "parvovirus": "Infectious and Parasitic Diseases",
+  "intestinal parasites": "Infectious and Parasitic Diseases",
+  "parasites": "Infectious and Parasitic Diseases",
+  "fleas": "Infectious and Parasitic Diseases",
+  "feline herpesvirus": "Infectious and Parasitic Diseases",
+
+  "Mental, behavioural or neurodevelopmental disorders": "Neurological and Behavioural Disorders",
+  "Diseases of the nervous system": "Neurological and Behavioural Disorders",
+  "behavioral issues": "Neurological and Behavioural Disorders",
+  "feline cognitive dysfunction": "Neurological and Behavioural Disorders",
+  "epilepsy": "Neurological and Behavioural Disorders",
+  "seizure control": "Neurological and Behavioural Disorders",
+
+  "Diseases of the visual system": "Eye Conditions",
+
+  "Endocrine, nutritional or metabolic diseases": "Metabolic and Endocrine Disorders",
+  "diabetes": "Metabolic and Endocrine Disorders",
+  "hyperthyroidism": "Metabolic and Endocrine Disorders",
+
+  "Diseases of the immune system": "Immune System Disorders",
+  "allergies": "Immune System Disorders",
+
+  "Injury, poisoning or certain other consequences of external causes": "Injury and Poisoning",
+  "hoof abscess": "Injury and Poisoning",
+  "puncture wound care": "Injury and Poisoning",
+
+  "Diseases of the genitourinary system": "Genitourinary Conditions",
+  "bladder stones": "Genitourinary Conditions",
+  "cystitis": "Genitourinary Conditions",
+  "urinary tract infection": "Genitourinary Conditions",
+  "chronic kidney disease": "Genitourinary Conditions",
+
+  "Diseases of the circulatory system": "Cardiovascular Conditions",
+  "heart disease": "Cardiovascular Conditions",
+  "heart disease risk": "Cardiovascular Conditions",
+  "heartworm": "Cardiovascular Conditions",
+
+  "Diseases of the blood or blood-forming organs": "Blood Disorders",
+  "anemia": "Blood Disorders",
+
+  "Diseases of the respiratory system": "Respiratory Conditions",
+  "bacterial pneumonia": "Respiratory Conditions",
+  "brachycephalic syndrome": "Respiratory Conditions",
+  "bronchitis": "Respiratory Conditions",
+  "canine influenza": "Respiratory Conditions",
+  "chronic bronchitis": "Respiratory Conditions",
+  "heaves": "Respiratory Conditions",
+  "kennel cough": "Respiratory Conditions",
+  "upper respiratory infection": "Respiratory Conditions",
+
+  "Neoplasms": "Neoplasms",
+  "Tumour": "Neoplasms",
+
+  "Digestive Issues": "Digestive Issues",
+  "colitis": "Digestive Issues",
+  "gastroenteritis": "Digestive Issues",
+  "gastrointestinal blockage": "Digestive Issues",
+  "gastrointestinal upset": "Digestive Issues",
+  "intestinal blockage": "Digestive Issues",
+  "intestinal impaction": "Digestive Issues",
+  "Gastrointestinal": "Digestive Issues",
+
+  "Pregnancy, childbirth or the puerperium": "Reproductive Conditions",
+  "Certain conditions originating in the perinatal period": "Reproductive Conditions",
+  "Developmental anomalies": "Reproductive Conditions",
+  "orchiectomy": "Reproductive Conditions",
+
+  "Respiratory": "Respiratory Conditions",
+  "Pruritus": "Skin Conditions",
+  "Renal": "Genitourinary Conditions",
+  "Trauma": "Injury and Poisoning"
+}
