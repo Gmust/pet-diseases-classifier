@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Pet Care AI Microservice — AWS Lambda + API Gateway deployment.
+  Free tier: 1M requests/month + 400K GB-seconds/month (permanent).
+
+# ── Overridable parameters ──────────────────────────────────────────────────
+Parameters:
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Description: Gemini API key (from aistudio.google.com/apikey)
+
+  GeminiModel:
+    Type: String
+    Default: gemini-2.5-flash-lite
+    Description: "Gemini model name. Free option: gemini-2.5-flash-lite (20 req/day)"
+
+  ApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Optional X-API-Key for /predict auth (leave empty to disable)
+
+  LowConfidenceThreshold:
+    Type: String
+    Default: "0.65"
+    Description: Confidence below this value adds a low-confidence warning to the explanation
+
+# ── Shared defaults for all Lambda functions ───────────────────────────────
+Globals:
+  Function:
+    # 60 s covers model load (~15-30 s cold start) + inference + Gemini call
+    Timeout: 60
+    # 3 GB — transformer model needs ~2 GB RAM; extra headroom for tokenisation
+    MemorySize: 3008
+    Environment:
+      Variables:
+        GEMINI_API_KEY: !Ref GeminiApiKey
+        GEMINI_MODEL: !Ref GeminiModel
+        API_KEY: !Ref ApiKey
+        MODEL_PATH: models/transformer_model
+        LOW_CONFIDENCE_THRESHOLD: !Ref LowConfidenceThreshold
+        ROOT_PATH: /Prod
+
+# ── Resources ──────────────────────────────────────────────────────────────
+Resources:
+
+  PetCareAiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      # Routes: catch-all proxy + explicit root
+      Events:
+        ApiProxy:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+        ApiRoot:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+        # Keep-warm: invoke every 5 minutes so the container stays hot.
+        # The lambda_handler.py swallows EventBridge events (non-HTTP payloads)
+        # so this never reaches Mangum/FastAPI.
+        KeepWarm:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Prevent cold starts by keeping the Lambda container alive
+            Enabled: true
+    Metadata:
+      DockerTag: latest
+      DockerContext: .
+      Dockerfile: Dockerfile.lambda
+
+# ── Outputs ────────────────────────────────────────────────────────────────
+Outputs:
+  ApiUrl:
+    Description: Public API Gateway URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt PetCareAiFunction.Arn
+
+  FunctionName:
+    Description: Lambda Function name (useful for logs)
+    Value: !Ref PetCareAiFunction

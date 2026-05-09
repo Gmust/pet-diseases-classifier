@@ -1,0 +1,49 @@
+# ── Lambda container image ─────────────────────────────────────────────────
+# Uses python:3.11-slim + awslambdaric instead of the official ECR Lambda
+# base image — both are fully supported by AWS for custom runtime containers.
+#
+# Single-stage build (no multi-stage COPY) to avoid Docker content-store
+# corruption issues that appear with cross-stage layer exports on some setups.
+#
+# Platform pinned to linux/amd64 — Lambda x86_64 target.
+# Build on Apple Silicon: Docker emulates via Rosetta/QEMU automatically.
+# ---------------------------------------------------------------------------
+
+FROM --platform=linux/amd64 python:3.11-slim
+
+# gcc is required by awslambdaric (C extension)
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /var/task
+
+# 1. numpy pinned first — prevents transitive deps (e.g. from transformers)
+#    from resolving numpy>=2.0 and trying to build it from source.
+# 2. PyTorch CPU-only. torchvision is NOT needed for inference — skip it.
+# 3. Lambda Runtime Interface Client — handles Lambda service communication.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "numpy==1.26.4" && \
+    pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.4.1 && \
+    pip install --no-cache-dir awslambdaric
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code
+COPY app/ ./app/
+
+# Fine-tuned model (HuggingFace format, produced by app/ml/train.py)
+COPY models/transformer_model/ ./models/transformer_model/
+
+COPY .env.example .env.example
+
+# Lambda runtime user needs read access — macOS builds sometimes strip world perms
+RUN chmod -R 755 /var/task/
+
+ENV MODEL_PATH=models/transformer_model
+
+# awslambdaric polls the Lambda Runtime API and dispatches events to the handler
+ENTRYPOINT ["/usr/local/bin/python", "-m", "awslambdaric"]
+CMD ["app.lambda_handler.handler"]

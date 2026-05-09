@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "pet-care-ai"
+resolve_s3 = true
+s3_prefix = "pet-care-ai"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+parameter_overrides = "GeminiModel=\"gemini-2.5-flash-lite\" LowConfidenceThreshold=\"0.65\""
+image_repositories = ["PetCareAiFunction=276460186054.dkr.ecr.us-east-1.amazonaws.com/petcareai5d821331/petcareaifunction9c5c02afrepo"]
+
+[default.global.parameters]
+region = "us-east-1"

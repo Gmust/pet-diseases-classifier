@@ -32,8 +32,16 @@ htmlcov/
 # Tooling and notebooks
 .ipynb_checkpoints/
 
-# Large model artifacts
-models/transformer_model/model.safetensors
+# AWS SAM build artifacts
+.aws-sam/
+samconfig.toml
+
+# Trained model weights (large binary — store in S3 / HuggingFace Hub, not git)
+models/transformer_model/
+
+# Training and data artifacts
+data/synthetic_data.parquet
+data/merged_augmented.parquet
 
 # OS and editor files
 .DS_Store

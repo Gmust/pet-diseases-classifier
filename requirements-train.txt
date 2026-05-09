@@ -1,0 +1,9 @@
+# ── Training pipeline ─────────────────────────────────────────────────────
+# Install alongside requirements.txt when running app/ml/train.py,
+# fetch_and_merge.py, or generate_synthetic.py locally.
+#
+#   pip install -r requirements.txt -r requirements-train.txt
+
+datasets==2.21.0
+scikit-learn==1.5.2
+joblib==1.4.2

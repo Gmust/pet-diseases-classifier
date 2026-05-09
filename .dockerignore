@@ -1,0 +1,29 @@
+# Virtual environment — never include in image
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Training data — not needed at runtime
+data/
+
+# Old joblib model artifacts (replaced by transformer model)
+models/classifier.joblib
+models/vectorizer.joblib
+
+# Git
+.git/
+.gitignore
+
+# Dev / editor files
+.env
+*.env
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and temp files
+*.log
+tmp/
