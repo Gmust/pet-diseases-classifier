@@ -242,3 +242,26 @@ _FALLBACK = ConditionMetadata(
 def get_condition_metadata(condition: str) -> ConditionMetadata:
     """Return metadata for *condition*, falling back gracefully to safe defaults."""
     return CONDITION_METADATA.get(condition, _FALLBACK)
+
+
+# Maps urgency → a cautious next-step clause for the static explanation path.
+_URGENCY_PHRASING: dict[UrgencyLevel, str] = {
+    UrgencyLevel.MONITOR: "This can often be monitored at home, but keep a close eye on any changes.",
+    UrgencyLevel.CONSULT_SOON: "It would be best to book a veterinary appointment in the next day or two.",
+    UrgencyLevel.URGENT: "This warrants a same-day or next-morning veterinary visit.",
+    UrgencyLevel.EMERGENCY: "This may be a medical emergency — please seek veterinary care immediately.",
+}
+
+
+def build_static_explanation(condition: str, meta: ConditionMetadata | None = None) -> str:
+    """Compose a cautious, no-API explanation string for a predicted condition.
+
+    Used by the USE_STATIC_EXPLANATIONS cost path so /predict can answer without
+    calling Gemini. Wording stays hedged (may / could) and never asserts a diagnosis.
+    """
+    meta = meta or get_condition_metadata(condition)
+    next_step = _URGENCY_PHRASING.get(meta.urgency, _URGENCY_PHRASING[UrgencyLevel.CONSULT_SOON])
+    return (
+        f"The described symptoms may be consistent with {condition.lower()}. "
+        f"{next_step} See the home-care tips below for what you can do right now."
+    )

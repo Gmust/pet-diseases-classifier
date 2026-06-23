@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,7 +49,7 @@ class DiseaseCategory(str, Enum):
 
 
 class PetType(str, Enum):
-    """Supported pet species for the /ask endpoint."""
+    """Supported pet species (optional hint on /chat, used by /wellness)."""
 
     DOG = "dog"
     CAT = "cat"
@@ -71,43 +72,6 @@ SUPPORTED_PET_TYPES: frozenset[PetType] = frozenset({
     PetType.FISH,
     PetType.TURTLE,
 })
-
-
-class AskRequest(BaseModel):
-    question: str = Field(
-        ...,
-        min_length=3,
-        examples=["How often should I brush a Persian cat?"],
-    )
-    pet_type: PetType | None = Field(
-        default=None,
-        alias="petType",
-        description="Optional — if provided and unsupported, returns an immediate 'not covered' response.",
-        examples=["cat"],
-    )
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class AskResponse(BaseModel):
-    answer: str
-    related_topics: list[str] = Field(default_factory=list, alias="relatedTopics")
-    disclaimer: str
-
-    model_config = ConfigDict(
-        populate_by_name=True,
-        json_schema_extra={
-            "example": {
-                "answer": (
-                    "Persian cats have long, dense coats that mat easily. "
-                    "Daily brushing with a wide-tooth comb and a slicker brush is recommended. "
-                    "Pay extra attention to the armpits, belly, and behind the ears."
-                ),
-                "relatedTopics": ["grooming", "persian", "long-hair breeds"],
-                "disclaimer": "General pet care information — not a substitute for professional veterinary advice.",
-            }
-        },
-    )
 
 
 # ── Wellness score models ──────────────────────────────────────────────────
@@ -242,7 +206,12 @@ class WellnessResponse(BaseModel):
 # ── Predict models ─────────────────────────────────────────────────────────
 
 class PredictRequest(BaseModel):
-    text: str = Field(..., min_length=1, examples=["My dog has been vomiting and has low appetite"])
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=4000,
+        examples=["My dog has been vomiting and has low appetite"],
+    )
 
 
 class PredictResponse(BaseModel):
@@ -254,6 +223,108 @@ class PredictResponse(BaseModel):
     specialist: SpecialistType
     disease_category: DiseaseCategory = Field(..., alias="diseaseCategory")
     home_advice: list[str] = Field(default_factory=list, alias="homeAdvice")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# ── Chat models ────────────────────────────────────────────────────────────
+# Stateless multi-turn chat. The backend owns all session state: it stores the
+# message history and the rolling `symptomSummary`, and replays the relevant
+# slice on every call. The microservice persists nothing.
+
+class ChatRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ChatMode(str, Enum):
+    """How the unified /chat endpoint handled the turn (decided under the hood)."""
+
+    GENERAL = "general"      # general pet-care Q&A — `prediction` is null, `relatedTopics` set
+    HEALTH = "health"        # symptom/health concern — `prediction` populated
+    EMERGENCY = "emergency"  # red-flag detected — emergency message + advice
+
+
+class ChatMessage(BaseModel):
+    role: ChatRole
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class ChatRequest(BaseModel):
+    # Aliased fields use Annotated[...] form so the camelCase alias is attached
+    # unambiguously (pydantic 2.12+ warns about Field(alias=...) defaults on
+    # union-typed fields). populate_by_name=True keeps the snake_case names valid too.
+    session_id: Annotated[
+        str | None,
+        Field(alias="sessionId",
+              description="Opaque session id — used only for logging/telemetry, never for storage."),
+    ] = None
+    messages: Annotated[
+        list[ChatMessage],
+        Field(min_length=1, max_length=50,
+              description="Recent conversation, oldest-first. The last entry MUST be the new user message."),
+    ]
+    symptom_summary: Annotated[
+        str | None,
+        Field(alias="symptomSummary",
+              description="Rolling symptom summary returned by the previous turn. Null/empty on the first turn."),
+    ] = None
+    pet_type: Annotated[
+        PetType | None,
+        Field(alias="petType", description="Optional species hint — improves the conversational answer."),
+    ] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class TopKItem(BaseModel):
+    condition: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ChatPrediction(BaseModel):
+    predicted_condition: str = Field(..., alias="predictedCondition")
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    top_k: list[TopKItem] = Field(default_factory=list, alias="topK")
+    urgency: UrgencyLevel
+    specialist: SpecialistType
+    disease_category: DiseaseCategory = Field(..., alias="diseaseCategory")
+    home_advice: list[str] = Field(default_factory=list, alias="homeAdvice")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ChatResponse(BaseModel):
+    mode: ChatMode = Field(
+        ...,
+        description="What the endpoint did this turn: general Q&A, health triage, or emergency. "
+        "Branch on this — `prediction` is only present for health/emergency.",
+    )
+    answer: str = Field(..., description="Conversational reply for the user.")
+    symptom_summary: str = Field(
+        ...,
+        alias="symptomSummary",
+        description="Updated rolling symptom summary — the backend MUST persist this and send it back next turn.",
+    )
+    prediction: ChatPrediction | None = Field(
+        default=None,
+        description="Classifier result. Present for mode=health/emergency; null for mode=general.",
+    )
+    related_topics: list[str] = Field(
+        default_factory=list,
+        alias="relatedTopics",
+        description="Keyword tags for a general-care answer (mode=general). Empty otherwise.",
+    )
+    needs_clarification: bool = Field(
+        default=False,
+        alias="needsClarification",
+        description="True when confidence was low and the answer asks a follow-up question instead of asserting.",
+    )
+    disclaimer: str
+
+    model_config = ConfigDict(populate_by_name=True)
 
     model_config = ConfigDict(
         populate_by_name=True,

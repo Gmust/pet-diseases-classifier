@@ -1,0 +1,8 @@
+# Test-only dependencies. Deliberately slim: the suite mocks the classifier and
+# leaves Gemini unconfigured, so neither torch/transformers nor google-genai are
+# needed to run it. (The classifier regression test self-skips without weights.)
+fastapi==0.116.1
+pydantic>=2.7
+python-dotenv==1.1.1
+httpx>=0.27
+pytest>=8.0

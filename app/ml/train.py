@@ -91,6 +91,11 @@ def parse_args() -> argparse.Namespace:
                         help="Max tokenizer sequence length (tokens). 256 covers ~99% of your data.")
     parser.add_argument("--warmup-ratio", type=float, default=0.1,
                         help="Fraction of total steps used for linear LR warm-up.")
+    parser.add_argument("--loss", type=str, default="ce", choices=["ce", "focal"],
+                        help="Loss: 'ce' (class-weighted cross-entropy) or 'focal' (focuses on hard "
+                             "minority examples — often improves weak/under-represented classes).")
+    parser.add_argument("--focal-gamma", type=float, default=2.0,
+                        help="Focusing parameter for focal loss (higher = more weight on hard examples).")
     parser.add_argument("--test-size", type=float, default=0.15, help="Held-out test split fraction.")
     parser.add_argument("--val-size", type=float, default=0.1,
                         help="Validation split fraction (taken from training portion).")
@@ -228,12 +233,41 @@ def _compute_class_weights(y_train: list[int], num_classes: int, device: torch.d
     return torch.tensor(weights, dtype=torch.float32).to(device)
 
 
+class FocalLoss(nn.Module):
+    """Multi-class focal loss (Lin et al., 2017).
+
+    Down-weights easy, well-classified examples so the optimizer spends more of
+    its budget on hard/minority examples — typically lifts recall on the weak
+    classes (Blood Disorders, Immune System, Genitourinary) beyond what plain
+    class weighting achieves. `alpha` reuses the balanced per-class weights.
+    """
+
+    def __init__(self, alpha: torch.Tensor | None = None, gamma: float = 2.0) -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce = nn.functional.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
+        pt = torch.exp(-ce)  # probability of the true class
+        focal = ((1.0 - pt) ** self.gamma) * ce
+        return focal.mean()
+
+
+def _build_loss_fn(loss_name: str, class_weights: torch.Tensor, focal_gamma: float) -> nn.Module:
+    if loss_name == "focal":
+        print(f"Using focal loss (gamma={focal_gamma}) with balanced class weights as alpha.")
+        return FocalLoss(alpha=class_weights, gamma=focal_gamma)
+    print("Using class-weighted cross-entropy loss.")
+    return nn.CrossEntropyLoss(weight=class_weights)
+
+
 def _run_epoch(
     model: nn.Module,
     loader: DataLoader,
     optimizer: AdamW | None,
     scheduler,
-    loss_fn: nn.CrossEntropyLoss,
+    loss_fn: nn.Module,
     device: torch.device,
     train: bool,
 ) -> tuple[float, list[int], list[int]]:
@@ -285,6 +319,8 @@ def train_and_save(
     weight_decay: float = 0.01,
     max_length: int = 256,
     warmup_ratio: float = 0.1,
+    loss: str = "ce",
+    focal_gamma: float = 2.0,
     test_size: float = 0.15,
     val_size: float = 0.1,
     patience: int = 2,
@@ -368,7 +404,7 @@ def train_and_save(
         num_training_steps=total_steps,
     )
     class_weights = _compute_class_weights(y_train, num_classes, device)
-    loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+    loss_fn = _build_loss_fn(loss, class_weights, focal_gamma)
 
     # --- Training loop with early stopping ---
     from sklearn.metrics import f1_score
@@ -420,6 +456,23 @@ def train_and_save(
     print("\n=== Test-set Classification Report ===")
     print(classification_report(test_labels, test_preds, target_names=label_names, zero_division=0))
 
+    # Confusion matrix — shows WHICH classes the weak ones are mistaken for.
+    # This should drive label decisions (e.g. merge vs. more data) far better
+    # than raw row counts. Rows = true label, columns = predicted label.
+    from sklearn.metrics import confusion_matrix
+
+    cm = confusion_matrix(test_labels, test_preds, labels=list(range(num_classes)))
+    print("\n=== Confusion Matrix (rows=true, cols=pred) ===")
+    short = [name[:14] for name in label_names]
+    header = "true\\pred".ljust(16) + "".join(f"{i:>6}" for i in range(num_classes))
+    print(header)
+    for i, row in enumerate(cm):
+        line = f"{short[i]:<16}" + "".join(f"{v:>6}" for v in row)
+        print(line)
+    print("\nColumn index → label:")
+    for i, name in enumerate(label_names):
+        print(f"  {i:>2}: {name}")
+
     # --- Save model + tokenizer ---
     output_dir = Path(model_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -448,6 +501,8 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         max_length=args.max_length,
         warmup_ratio=args.warmup_ratio,
+        loss=args.loss,
+        focal_gamma=args.focal_gamma,
         test_size=args.test_size,
         val_size=args.val_size,
         patience=args.patience,

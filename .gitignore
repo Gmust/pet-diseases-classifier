@@ -36,12 +36,14 @@ htmlcov/
 .aws-sam/
 samconfig.toml
 
-# Trained model weights (large binary — store in S3 / HuggingFace Hub, not git)
-models/transformer_model/
+# Trained model artifacts (large binaries — regenerate via train.py / export_onnx.py)
+models/
+!models/.gitkeep
 
-# Training and data artifacts
-data/synthetic_data.parquet
-data/merged_augmented.parquet
+# Training and data artifacts (large binaries — keep small JSON like label_map.json)
+data/*.parquet
+data/*.csv
+!data/label_map.json
 
 # OS and editor files
 .DS_Store

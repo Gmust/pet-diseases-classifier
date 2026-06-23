@@ -88,6 +88,21 @@ CONDITION_SPECS: dict[str, dict] = {
         "examples": "hit by car, lacerations, fractures, toxic plant ingestion, chemical burns, insect bites, foreign body ingestion",
         "species_focus": "dogs and cats",
     },
+    "Metabolic and Endocrine Disorders": {
+        "description": "metabolic, nutritional and hormonal conditions",
+        "examples": "diabetes, hypothyroidism, hyperthyroidism, Cushing's disease, Addison's disease, obesity, pancreatitis",
+        "species_focus": "dogs and cats",
+    },
+    "Neoplasms": {
+        "description": "tumours, lumps and cancers",
+        "examples": "lipoma, mast cell tumour, lymphoma, mammary tumour, melanoma, osteosarcoma, a new growing lump",
+        "species_focus": "dogs and cats",
+    },
+    "Neurological and Behavioural Disorders": {
+        "description": "neurological and behavioural conditions",
+        "examples": "seizures, vestibular disease, cognitive dysfunction, anxiety, compulsive behaviour, head tilt, disorientation, tremors",
+        "species_focus": "dogs and cats",
+    },
 }
 
 # Classes that already have good data (>200 training samples, F1 > 0.80)
@@ -104,6 +119,19 @@ _WELL_REPRESENTED = {
 }
 
 _WEAK_CLASSES = [c for c in CONDITION_SPECS if c not in _WELL_REPRESENTED]
+
+# Classes with ZERO pet-owner-voice training data (only clinical/external/synthetic
+# coverage). These are where the model fails on real app input, because users type
+# like owners, not clinicians. Generating OWNER-voice text here directly fills the
+# serving-distribution gap surfaced by prepare_dataset.py.
+_OWNER_DATA_CLASSES = {
+    "Musculoskeletal Conditions",
+    "Skin Conditions",
+    "Digestive Issues",
+    "Ear Conditions",
+    "Infectious and Parasitic Diseases",
+}
+_OWNER_GAP_CLASSES = [c for c in CONDITION_SPECS if c not in _OWNER_DATA_CLASSES]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +156,7 @@ def _get_gemini_client():
 # Prompt builder
 # ---------------------------------------------------------------------------
 
+# style → (system prompt, record_type, example line for the few-shot format)
 SYSTEM_PROMPT = """You are a veterinary data annotation expert.
 Generate realistic training examples for a pet condition classifier.
 Each example must be a natural symptom description that a pet owner OR a veterinary clinician might write.
@@ -143,15 +172,51 @@ CRITICAL RULES:
 - Output ONLY a JSON array of strings, nothing else
 """
 
-def _build_prompt(condition: str, spec: dict, n: int) -> str:
-    return f"""Generate {n} realistic symptom description examples for a pet with {spec['description']}.
+# Owner voice — this is the register the model is actually SERVED. Use this to fill
+# the owner-language gap for classes that only have clinical/synthetic coverage.
+OWNER_SYSTEM_PROMPT = """You are simulating how everyday PET OWNERS describe their pet's
+symptoms when typing into a phone app — NOT how a vet writes.
+
+Write in the owner's voice:
+- First person, informal, worried pet-parent tone ("my dog", "she", "he", sometimes a name).
+- Plain everyday words — NO medical jargon, NO abbreviations, NO vital signs or exam findings.
+- Describe what they SEE or NOTICE at home (behaviour, appetite, energy, what looks wrong).
+- Natural and a bit messy: varied length, casual phrasing, occasional run-on sentences.
+- Some very short ("my cat keeps sneezing and won't eat"), some a few sentences.
+
+CRITICAL RULES:
+- Only describe symptoms/observations — NEVER name or guess the diagnosis in the text.
+- Mostly dogs and cats; occasionally rabbits or birds.
+- Avoid repetitive openings — do not start every example the same way.
+- Output ONLY a JSON array of strings, nothing else.
+"""
+
+# style -> (system_prompt, record_type, few-shot example line)
+_STYLES: dict[str, tuple[str, str, str]] = {
+    "mixed": (SYSTEM_PROMPT, "Synthetic (Gemini)",
+              '["My dog has been lethargic for 3 days and gums look pale.", "The patient presented with ...", ...]'),
+    "owner": (OWNER_SYSTEM_PROMPT, "Synthetic Owner (Gemini)",
+              '["my dog seems really tired lately and his gums look kinda pale", "she hasnt been herself, keeps hiding and wont eat", ...]'),
+    "clinical": (SYSTEM_PROMPT, "Synthetic Clinical (Gemini)",
+                 '["Patient presents with pallor, lethargy and tachycardia on exam.", "O reports inappetence x3d; MM pale ...", ...]'),
+}
+
+
+def _build_prompt(condition: str, spec: dict, n: int, style: str = "mixed") -> str:
+    _, _, example_line = _STYLES[style]
+    voice = (
+        "symptom descriptions, each written the way a worried pet OWNER would describe it at home,"
+        if style == "owner"
+        else "symptom description examples,"
+    )
+    return f"""Generate {n} realistic {voice} for a pet with {spec['description']}.
 
 Condition being described (DO NOT mention this explicitly in the text): {condition}
 Typical diseases in this category: {spec['examples']}
 Focus species: {spec['species_focus']}
 
 Output a JSON array of exactly {n} strings. Example format:
-["My dog has been lethargic for 3 days and gums look pale.", "The patient presented with ...", ...]
+{example_line}
 
 Generate the {n} examples now:"""
 
@@ -165,9 +230,11 @@ class QuotaExhaustedError(Exception):
     pass
 
 
-def _generate_batch(client, model_name: str, condition: str, spec: dict, n: int) -> list[str]:
+def _generate_batch(client, model_name: str, condition: str, spec: dict, n: int,
+                    style: str = "mixed") -> list[str]:
     """Generate a batch of synthetic examples using Gemini."""
-    prompt = _build_prompt(condition, spec, n)
+    prompt = _build_prompt(condition, spec, n, style)
+    system_prompt = _STYLES[style][0]
     raw = ""
 
     try:
@@ -175,7 +242,7 @@ def _generate_batch(client, model_name: str, condition: str, spec: dict, n: int)
             model=model_name,
             contents=prompt,
             config={
-                "system_instruction": SYSTEM_PROMPT,
+                "system_instruction": system_prompt,
                 "temperature": 0.9,
                 "max_output_tokens": 8192,
             },
@@ -243,8 +310,18 @@ def generate_synthetic_data(
     # Large batches = fewer API calls = faster generation
     batch_size: int = 50,
     dry_run: bool = False,
+    style: str = "mixed",
+    owner_gap: bool = False,
 ) -> None:
-    target_classes = classes or _WEAK_CLASSES
+    if style not in _STYLES:
+        raise ValueError(f"Unknown style '{style}'. Choose from: {', '.join(_STYLES)}")
+    record_type = _STYLES[style][1]
+
+    if owner_gap and classes is None:
+        # The 11 classes with no owner-voice training data.
+        target_classes = list(_OWNER_GAP_CLASSES)
+    else:
+        target_classes = classes or _WEAK_CLASSES
 
     # Validate requested classes
     unknown = [c for c in target_classes if c not in CONDITION_SPECS]
@@ -257,9 +334,10 @@ def generate_synthetic_data(
         max(1, (samples_per_class // batch_size) + 1)
         for _ in target_classes
     )
-    print(f"Generating synthetic data for {len(target_classes)} classes")
+    print(f"Generating synthetic data for {len(target_classes)} classes  |  style: {style}")
     print(f"Target: {samples_per_class} examples per class  |  batch size: {batch_size}")
     print(f"Model: {gemini_model}  |  estimated API calls: ~{calls_needed}")
+    print(f"Record type: {record_type}")
     print(f"Classes: {target_classes}\n")
 
     if dry_run:
@@ -267,7 +345,7 @@ def generate_synthetic_data(
         for condition in target_classes:
             spec = CONDITION_SPECS[condition]
             print(f"--- {condition} ---")
-            print(_build_prompt(condition, spec, batch_size))
+            print(_build_prompt(condition, spec, batch_size, style))
             print()
         return
 
@@ -285,7 +363,7 @@ def generate_synthetic_data(
             while len(collected) < samples_per_class and attempts < max_attempts:
                 needed = samples_per_class - len(collected)
                 this_batch = min(batch_size, needed + 10)  # slight overshoot
-                batch = _generate_batch(client, gemini_model, condition, spec, this_batch)
+                batch = _generate_batch(client, gemini_model, condition, spec, this_batch, style)
                 collected.extend(batch)
                 attempts += 1
 
@@ -299,7 +377,7 @@ def generate_synthetic_data(
             print(f"\n⚠️  {exc}")
             # Save whatever we have so far (including current partial class)
             for text in collected:
-                all_rows.append({"text": text, "condition": condition, "record_type": "Synthetic (Gemini)"})
+                all_rows.append({"text": text, "condition": condition, "record_type": record_type})
             _save_partial(all_rows, output_path)
             print("\nRun the script again tomorrow to continue (existing rows will be preserved).")
             return
@@ -319,7 +397,7 @@ def generate_synthetic_data(
             all_rows.append({
                 "text": text,
                 "condition": condition,
-                "record_type": "Synthetic (Gemini)",
+                "record_type": record_type,
             })
 
         time.sleep(0.5)  # gentle pause between classes
@@ -355,6 +433,12 @@ def parse_args() -> argparse.Namespace:
                         help="Target number of examples per class.")
     parser.add_argument("--classes", nargs="+", default=None,
                         help="Specific classes to generate. Default: all weak classes.")
+    parser.add_argument("--style", choices=["mixed", "owner", "clinical"], default="mixed",
+                        help="Writing register. 'owner' = how users actually type (fills the "
+                             "owner-language gap); 'clinical' = vet notes; 'mixed' = both.")
+    parser.add_argument("--owner-gap", action="store_true",
+                        help="Target the 11 classes that have NO owner-voice data. Pair with "
+                             "--style owner to fill the serving-distribution gap.")
     parser.add_argument("--gemini-model", default="gemini-2.5-flash",
                         help="Gemini model name. Use gemini-2.5-flash with paid credits "
                              "for best quality, or gemini-1.5-flash for free tier (1,500 req/day).")
@@ -374,4 +458,6 @@ if __name__ == "__main__":
         gemini_model=args.gemini_model,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
+        style=args.style,
+        owner_gap=args.owner_gap,
     )

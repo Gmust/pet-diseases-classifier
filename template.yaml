@@ -27,21 +27,48 @@ Parameters:
     Default: "0.65"
     Description: Confidence below this value adds a low-confidence warning to the explanation
 
+  ApiRateLimit:
+    Type: Number
+    Default: 20
+    Description: "Steady-state request rate (req/s) allowed across all endpoints."
+
+  ApiBurstLimit:
+    Type: Number
+    Default: 40
+    Description: "Maximum burst of concurrent requests before throttling (429)."
+
+  FunctionMemory:
+    Type: Number
+    Default: 1769
+    Description: "Lambda memory (MB). 1769 = a full vCPU, which roughly halves cold-start init time
+      vs 1024 (~0.5 vCPU) and is often cheaper per request since duration drops faster than memory rises."
+
 # ── Shared defaults for all Lambda functions ───────────────────────────────
 Globals:
   Function:
-    # 60 s covers model load (~15-30 s cold start) + inference + Gemini call
+    # 60 s so a cold start (image pull + model load) plus the Gemini call can't
+    # hit the timeout. Warm requests are ~1-3 s; the keep-warm ping keeps it warm.
     Timeout: 60
-    # 3 GB — transformer model needs ~2 GB RAM; extra headroom for tokenisation
-    MemorySize: 3008
+    # 1 GB — the quantized ONNX model runs comfortably here. (The old torch image
+    # needed ~3 GB; ONNX Runtime is what lets us drop it, cutting GB-seconds ~3x.)
+    MemorySize: !Ref FunctionMemory
     Environment:
       Variables:
         GEMINI_API_KEY: !Ref GeminiApiKey
         GEMINI_MODEL: !Ref GeminiModel
         API_KEY: !Ref ApiKey
-        MODEL_PATH: models/transformer_model
+        MODEL_BACKEND: onnx
+        MODEL_PATH: models/transformer_model_onnx
         LOW_CONFIDENCE_THRESHOLD: !Ref LowConfidenceThreshold
         ROOT_PATH: /Prod
+  Api:
+    # Gateway-level throttling protects the Lambda (and your Gemini quota) from
+    # bursts/abuse. Requests over the limit get a 429 before reaching the function.
+    MethodSettings:
+      - ResourcePath: "/*"
+        HttpMethod: "*"
+        ThrottlingRateLimit: !Ref ApiRateLimit
+        ThrottlingBurstLimit: !Ref ApiBurstLimit
 
 # ── Resources ──────────────────────────────────────────────────────────────
 Resources:
@@ -74,7 +101,8 @@ Resources:
     Metadata:
       DockerTag: latest
       DockerContext: .
-      Dockerfile: Dockerfile.lambda
+      # ONNX Runtime image (no torch). Build the model dir first with export_onnx.py.
+      Dockerfile: Dockerfile.lambda.onnx
 
 # ── Outputs ────────────────────────────────────────────────────────────────
 Outputs:

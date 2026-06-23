@@ -2,11 +2,13 @@
 AWS Lambda entry point.
 
 Wraps the FastAPI app with Mangum so API Gateway HTTP events are translated
-into ASGI requests. The FastAPI lifespan (model loading) runs on the first
-cold-start and is then cached for the lifetime of the container.
+into ASGI requests.
 
-EventBridge keep-warm pings (scheduled events) are swallowed here so Mangum
-doesn't raise an error on non-HTTP payloads.
+Model loading happens at INIT (module import) via ensure_services(), so the model
+is in memory before the first request — and crucially, before a keep-warm ping
+returns. EventBridge keep-warm pings also call ensure_services(), so a container
+that AWS recycled and re-warmed comes back with the model already loaded instead
+of paying the load on the next real request.
 """
 from __future__ import annotations
 
@@ -14,13 +16,21 @@ from typing import Any
 
 from mangum import Mangum
 
-from app.main import app
+from app.main import app, ensure_services
+
+# Load the model during Lambda INIT (full-power CPU, before any request). Without
+# this the model only loads on the first real HTTP request, making it slow even
+# on a "warm" container.
+ensure_services()
 
 _mangum_handler = Mangum(app, lifespan="auto")
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    # Keep-warm ping (non-HTTP scheduled event): make sure the model is loaded
+    # into THIS container, then return without going through Mangum.
     if "httpMethod" not in event and "requestContext" not in event:
+        ensure_services()
         return {"statusCode": 200, "body": "warm"}
 
     return _mangum_handler(event, context)

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+# torch / transformers are imported lazily inside the methods that use them.
+# This keeps `import app.ml.predictor` cheap: the test suite and lightweight
+# tooling can import the module (and PredictionResult) without pulling in the
+# heavy ML stack, and it shaves a little off the Lambda cold start before the
+# model is actually loaded.
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
 @dataclass(frozen=True)
@@ -28,10 +34,10 @@ class Predictor:
 
     def __init__(
         self,
-        model: AutoModelForSequenceClassification,
-        tokenizer: AutoTokenizer,
+        model: "AutoModelForSequenceClassification",
+        tokenizer: "AutoTokenizer",
         id2label: dict[int, str],
-        device: torch.device,
+        device: "torch.device",
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
@@ -63,6 +69,9 @@ class Predictor:
                 f"--model-dir {model_dir}"
             )
 
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
         if torch.cuda.is_available():
             device = torch.device("cuda")
         elif torch.backends.mps.is_available():
@@ -85,6 +94,8 @@ class Predictor:
     # ------------------------------------------------------------------
 
     def predict(self, text: str) -> PredictionResult:
+        import torch
+
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Text input cannot be empty.")
@@ -110,6 +121,8 @@ class Predictor:
 
     def predict_top_k(self, text: str, k: int = 3) -> list[PredictionResult]:
         """Return the top-k predictions sorted by confidence (highest first)."""
+        import torch
+
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Text input cannot be empty.")

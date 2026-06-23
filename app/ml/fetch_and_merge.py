@@ -224,16 +224,40 @@ def _load_petevalopen() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _load_synthetic(synthetic_path: str) -> pd.DataFrame:
-    """Load pre-generated synthetic data from generate_synthetic.py."""
-    path = Path(synthetic_path)
-    if not path.exists():
-        print(f"  [skip] Synthetic data not found: {path}")
+    """Load ALL synthetic files in the data directory, not just one.
+
+    Picks up the given path PLUS any sibling ``synthetic*.parquet`` / ``synthetic*.csv``
+    (e.g. synthetic_data.parquet AND synthetic_owner.parquet), so newly generated
+    files are merged automatically instead of being silently ignored.
+    """
+    base = Path(synthetic_path)
+    data_dir = base.parent if base.parent != Path("") else Path(".")
+
+    candidates: list[Path] = []
+    if base.exists():
+        candidates.append(base)
+    for pattern in ("synthetic*.parquet", "synthetic*.csv"):
+        candidates.extend(sorted(data_dir.glob(pattern)))
+
+    # De-duplicate paths while preserving order.
+    seen: set[Path] = set()
+    files = [p for p in candidates if not (p in seen or seen.add(p))]
+
+    if not files:
+        print(f"  [skip] No synthetic files found in {data_dir}/ (synthetic*.parquet|csv)")
         print("         Run first: python -m app.ml.generate_synthetic")
         return pd.DataFrame()
-    suffix = path.suffix.lower()
-    df = pd.read_csv(path) if suffix == ".csv" else pd.read_parquet(path)
-    print(f"  Loaded {len(df)} synthetic rows from {path.name}")
-    return df[["text", "condition", "record_type"]].copy()
+
+    frames = []
+    for path in files:
+        df = pd.read_csv(path) if path.suffix.lower() == ".csv" else pd.read_parquet(path)
+        df = df[["text", "condition", "record_type"]].copy()
+        print(f"  Loaded {len(df)} synthetic rows from {path.name}")
+        frames.append(df)
+
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["text", "condition"])
+    print(f"  Total synthetic rows (deduped): {len(merged)}")
+    return merged
 
 
 def fetch_and_merge(

@@ -127,8 +127,39 @@ _BAND_LABELS: dict[WellnessBand, str] = {
 # ── Internal Gemini response model ─────────────────────────────────────────
 
 class _WellnessNarrative(BaseModel):
-    narrative: str = Field(..., min_length=1)
+    narrative: str = Field(
+        ...,
+        min_length=1,
+        description="A short, mobile-friendly summary — 1-2 sentences, max ~35 words.",
+    )
     recommendations: list[str] = Field(default_factory=list)
+
+
+# Mobile cards have limited room — keep the narrative to ~2 sentences.
+_NARRATIVE_MAX_SENTENCES = 2
+_NARRATIVE_MAX_CHARS = 240
+
+
+def _shorten_narrative(text: str) -> str:
+    """Hard guard so the narrative stays mobile-friendly regardless of the model.
+
+    Keeps the first couple of sentences and caps total length. Never fails — just
+    trims. Recommendations carry the detail, so trimming the narrative is safe.
+    """
+    text = " ".join(text.split()).strip()
+    # Keep the first N sentence-ending segments.
+    parts, count, out = text.replace("! ", ". ").replace("? ", ". ").split(". "), 0, []
+    for part in parts:
+        out.append(part)
+        count += 1
+        if count >= _NARRATIVE_MAX_SENTENCES:
+            break
+    short = ". ".join(p.rstrip(".") for p in out).strip()
+    if short and not short.endswith((".", "!", "?")):
+        short += "."
+    if len(short) > _NARRATIVE_MAX_CHARS:
+        short = short[:_NARRATIVE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return short
 
 
 # ── Helper functions ────────────────────────────────────────────────────────
@@ -145,38 +176,34 @@ def _score_activity(
     activity: WellnessActivity | None,
     species: str,
 ) -> WellnessBreakdownItem:
+    """Score activity. Absent data is EXCLUDED (max_score=0) so it doesn't punish."""
     MAX = 20.0
     if activity is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # excluded from the total
 
     target = _ACTIVITY_TARGETS.get(_norm(species), _DEFAULT_ACTIVITY)
     earned = 0.0
     possible = 0.0
 
-    # Steps sub-score (10 pts) — only if target > 0
-    if target["steps"] > 0:
+    # Steps sub-score (10 pts) — only counts toward `possible` when provided.
+    if target["steps"] > 0 and activity.avg_steps_per_day is not None:
         possible += 10
-        if activity.avg_steps_per_day is not None:
-            ratio = _clamp(activity.avg_steps_per_day / target["steps"])
-            earned += ratio * 10
+        earned += _clamp(activity.avg_steps_per_day / target["steps"]) * 10
 
     # Active minutes sub-score (10 pts)
     if target["active_min"] > 0:
-        possible += 10
         if activity.avg_active_minutes_per_day is not None:
-            ratio = _clamp(activity.avg_active_minutes_per_day / target["active_min"])
-            earned += ratio * 10
+            possible += 10
+            earned += _clamp(activity.avg_active_minutes_per_day / target["active_min"]) * 10
     else:
-        # Species like fish — full points automatically
+        # Species like fish — active minutes not applicable; full points automatically.
         possible += 10
         earned += 10
 
     if possible == 0:
-        return WellnessBreakdownItem(score=MAX, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no usable activity data → excluded
 
-    # Scale earned to MAX
-    scaled = (earned / possible) * MAX
-    return WellnessBreakdownItem(score=round(scaled, 1), max_score=MAX)
+    return WellnessBreakdownItem(score=round((earned / possible) * MAX, 1), max_score=MAX)
 
 
 def _score_sleep(
@@ -185,7 +212,7 @@ def _score_sleep(
 ) -> WellnessBreakdownItem:
     MAX = 15.0
     if activity is None or activity.avg_sleep_hours_per_day is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no sleep data → excluded
 
     lo, hi = _SLEEP_NORMS.get(_norm(species), _DEFAULT_SLEEP)
     hours = activity.avg_sleep_hours_per_day
@@ -213,7 +240,7 @@ def _score_diet(
 ) -> WellnessBreakdownItem:
     MAX = 20.0
     if feeding is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no feeding data → excluded
 
     earned = 0.0
     possible = 0.0
@@ -221,12 +248,11 @@ def _score_diet(
     # Consistency (6 pts): how many of last 7 days had feeding logs
     possible += 6
     if feeding.consistency_days > 0:
-        consistency_ratio = _clamp(feeding.consistency_days / 7)
-        earned += consistency_ratio * 6
+        earned += _clamp(feeding.consistency_days / 7) * 6
 
-    # Meal frequency (6 pts): 2-3 meals/day is ideal for most species
-    possible += 6
+    # Meal frequency (6 pts): only counts when provided
     if feeding.avg_meals_per_day is not None:
+        possible += 6
         mpd = feeding.avg_meals_per_day
         if 1.8 <= mpd <= 3.2:
             earned += 6
@@ -235,12 +261,10 @@ def _score_diet(
         else:
             earned += 2
 
-    # Variety (2 pts): more than one food type
-    possible += 2
-    if len(feeding.food_types) >= 2:
-        earned += 2
-    elif len(feeding.food_types) == 1:
-        earned += 1
+    # Variety (2 pts): only counts when food types are known
+    if feeding.food_types:
+        possible += 2
+        earned += 2 if len(feeding.food_types) >= 2 else 1
 
     # Calorie fit (6 pts): only if weight and calories are known
     if pet.weight_kg and feeding.avg_calories_per_day:
@@ -248,23 +272,18 @@ def _score_diet(
         kcal_per_kg = _KCAL_PER_KG.get(_norm(pet.species), _DEFAULT_KCAL_PER_KG)
         target_kcal = kcal_per_kg * pet.weight_kg
         if target_kcal > 0:
-            ratio = feeding.avg_calories_per_day / target_kcal
-            # ratio=1.0 is perfect; penalise deviation
-            deviation = abs(ratio - 1.0)
+            deviation = abs(feeding.avg_calories_per_day / target_kcal - 1.0)
             if deviation <= 0.10:
                 earned += 6
             elif deviation <= 0.25:
                 earned += 4
             elif deviation <= 0.40:
                 earned += 2
-            else:
-                earned += 0
 
     if possible == 0:
-        return WellnessBreakdownItem(score=MAX, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no usable diet data → excluded
 
-    scaled = (earned / possible) * MAX
-    return WellnessBreakdownItem(score=round(scaled, 1), max_score=MAX)
+    return WellnessBreakdownItem(score=round((earned / possible) * MAX, 1), max_score=MAX)
 
 
 def _score_symptoms(
@@ -305,7 +324,7 @@ def _score_preventive(
 ) -> WellnessBreakdownItem:
     MAX = 10.0
     if care is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no preventive-care data → excluded
     score = 0.0
     if care.recent_vet_visit:
         score += 5
@@ -315,22 +334,24 @@ def _score_preventive(
 
 
 def _score_baseline(pet: WellnessPet) -> WellnessBreakdownItem:
-    MAX = 10.0
-    score = 0.0
+    """Each provided field contributes to BOTH earned and possible, so absent
+    fields are scaled out rather than scored as zero."""
+    earned = 0.0
+    possible = 0.0
 
-    # Age factor (5 pts): puppies/kittens and adults full points; seniors slight leniency
+    # Age factor (5 pts): adults full points; seniors (>~10y) slight leniency.
     if pet.age_months is not None:
-        if pet.age_months <= 24 or pet.age_months <= 120:  # up to ~10 years
-            score += 5
-        else:
-            score += 4  # senior — still good, just leniency
+        possible += 5
+        earned += 5 if pet.age_months <= 120 else 4
 
-    # Weight provided (5 pts): we give points for tracking, not for exact number
-    # (we don't have breed-specific weight charts here)
+    # Weight provided (5 pts): points for tracking, not for an exact number.
     if pet.weight_kg is not None and pet.weight_kg > 0:
-        score += 5
+        possible += 5
+        earned += 5
 
-    return WellnessBreakdownItem(score=score, max_score=MAX)
+    if possible == 0:
+        return WellnessBreakdownItem(score=0, max_score=0)  # no baseline data → excluded
+    return WellnessBreakdownItem(score=round(earned, 1), max_score=possible)
 
 
 def _condition_cap(conditions: list[WellnessCondition]) -> int | None:
@@ -391,13 +412,23 @@ def _get_trend(current: int, previous: int | None) -> TrendDirection | None:
 _NARRATIVE_SYSTEM = """
 You are a veterinary wellness assistant generating a report for a pet owner.
 Given the pet details and wellness score breakdown, write:
-1. A clear narrative (3-4 sentences) summarising the pet's wellness this week.
-   Mention which dimension is the weakest and why it matters.
-   Use encouraging, non-alarmist language.
+1. A SHORT narrative for a mobile app card: 1-2 sentences, max ~35 words total.
+   Name the weakest SCORED dimension in a few words. Encouraging, non-alarmist. No preamble.
 2. 3-5 specific, actionable recommendations ordered by priority.
    Be concrete — e.g. "Add 10 minutes to morning walks" not just "exercise more".
+   Put the detail HERE, not in the narrative.
+IMPORTANT: dimensions marked "not tracked (no data)" are MISSING data, NOT low scores.
+Never tell the owner to improve a not-tracked dimension. If a not-tracked dimension is
+important, you may gently suggest they START TRACKING it — but prioritise dimensions
+that were actually scored. Base the narrative's "weakest area" only on scored dimensions.
 Return ONLY valid JSON matching the required schema.
 """
+
+
+def _fmt_dimension(label: str, item: WellnessBreakdownItem) -> str:
+    if item.max_score == 0:
+        return f"  {label:<13}not tracked (no data)"
+    return f"  {label:<13}{item.score}/{item.max_score}"
 
 
 def _build_narrative_prompt(
@@ -412,13 +443,13 @@ def _build_narrative_prompt(
         f"Pet: {request.pet.species}, {request.pet.breed or 'unknown breed'}, "
         f"age {request.pet.age_months or '?'} months, weight {request.pet.weight_kg or '?'} kg",
         f"Wellness score: {score}/100 ({band.value})",
-        f"Breakdown:",
-        f"  Activity:      {breakdown.activity.score}/{breakdown.activity.max_score}",
-        f"  Sleep:         {breakdown.sleep.score}/{breakdown.sleep.max_score}",
-        f"  Diet:          {breakdown.diet.score}/{breakdown.diet.max_score}",
-        f"  Symptoms:      {breakdown.symptoms.score}/{breakdown.symptoms.max_score}",
-        f"  Preventive:    {breakdown.preventive_care.score}/{breakdown.preventive_care.max_score}",
-        f"  Baseline:      {breakdown.baseline.score}/{breakdown.baseline.max_score}",
+        "Breakdown (only scored dimensions count toward the score):",
+        _fmt_dimension("Activity:", breakdown.activity),
+        _fmt_dimension("Sleep:", breakdown.sleep),
+        _fmt_dimension("Diet:", breakdown.diet),
+        _fmt_dimension("Symptoms:", breakdown.symptoms),
+        _fmt_dimension("Preventive:", breakdown.preventive_care),
+        _fmt_dimension("Baseline:", breakdown.baseline),
     ]
     if detected_condition:
         lines.append(f"Classifier detected: {detected_condition}")
@@ -541,7 +572,7 @@ class WellnessService:
             if not response.text:
                 raise ValueError("Empty Gemini response.")
             parsed = _WellnessNarrative.model_validate_json(response.text)
-            return parsed.narrative, parsed.recommendations
+            return _shorten_narrative(parsed.narrative), parsed.recommendations
         except (ValidationError, ValueError) as exc:
             logger.warning("Wellness narrative parsing failed: %s", exc)
             return _fallback_narrative(band, score)
