@@ -103,6 +103,33 @@ CONDITION_SPECS: dict[str, dict] = {
         "examples": "seizures, vestibular disease, cognitive dysfunction, anxiety, compulsive behaviour, head tilt, disorientation, tremors",
         "species_focus": "dogs and cats",
     },
+    # These five are well-covered for dogs/cats but need specs so per-species
+    # generation (--species) can extend them to rabbits, birds, etc.
+    "Digestive Issues": {
+        "description": "digestive and gastrointestinal conditions",
+        "examples": "vomiting, diarrhoea, gastrointestinal upset, gut stasis (rabbits/guinea pigs), bloat, constipation, loss of appetite",
+        "species_focus": "dogs and cats",
+    },
+    "Skin Conditions": {
+        "description": "skin, coat and fur conditions",
+        "examples": "itching, hair loss, mites, rash, sores, overgrooming, flaky skin, scabs, fur loss",
+        "species_focus": "dogs and cats",
+    },
+    "Ear Conditions": {
+        "description": "ear conditions",
+        "examples": "ear infection, ear mites, head shaking, ear discharge, head tilt, scratching at ears",
+        "species_focus": "dogs and cats",
+    },
+    "Musculoskeletal Conditions": {
+        "description": "bone, joint and mobility conditions",
+        "examples": "limping, stiffness, arthritis, splayed leg, overgrown nails affecting gait, reluctance to move, swollen joints",
+        "species_focus": "dogs and cats",
+    },
+    "Infectious and Parasitic Diseases": {
+        "description": "infectious and parasitic diseases",
+        "examples": "fleas, mites, worms, coccidia, bacterial infection, viral infection, fever, lethargy from infection",
+        "species_focus": "dogs and cats",
+    },
 }
 
 # Classes that already have good data (>200 training samples, F1 > 0.80)
@@ -202,18 +229,26 @@ _STYLES: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _build_prompt(condition: str, spec: dict, n: int, style: str = "mixed") -> str:
+def _build_prompt(condition: str, spec: dict, n: int, style: str = "mixed",
+                  species: str | None = None) -> str:
     _, _, example_line = _STYLES[style]
+    focus_species = species or spec["species_focus"]
     voice = (
         "symptom descriptions, each written the way a worried pet OWNER would describe it at home,"
         if style == "owner"
         else "symptom description examples,"
     )
+    species_rule = (
+        f"\nEVERY example MUST be about a {species}. Use species-appropriate anatomy, behaviour and "
+        f"husbandry details (e.g. cage/tank/hutch, not 'walks' for caged pets). Mention the species naturally."
+        if species
+        else ""
+    )
     return f"""Generate {n} realistic {voice} for a pet with {spec['description']}.
 
 Condition being described (DO NOT mention this explicitly in the text): {condition}
 Typical diseases in this category: {spec['examples']}
-Focus species: {spec['species_focus']}
+Focus species: {focus_species}{species_rule}
 
 Output a JSON array of exactly {n} strings. Example format:
 {example_line}
@@ -231,9 +266,9 @@ class QuotaExhaustedError(Exception):
 
 
 def _generate_batch(client, model_name: str, condition: str, spec: dict, n: int,
-                    style: str = "mixed") -> list[str]:
+                    style: str = "mixed", species: str | None = None) -> list[str]:
     """Generate a batch of synthetic examples using Gemini."""
-    prompt = _build_prompt(condition, spec, n, style)
+    prompt = _build_prompt(condition, spec, n, style, species)
     system_prompt = _STYLES[style][0]
     raw = ""
 
@@ -312,10 +347,14 @@ def generate_synthetic_data(
     dry_run: bool = False,
     style: str = "mixed",
     owner_gap: bool = False,
+    species: str | None = None,
 ) -> None:
     if style not in _STYLES:
         raise ValueError(f"Unknown style '{style}'. Choose from: {', '.join(_STYLES)}")
     record_type = _STYLES[style][1]
+    if species:
+        # Tag the source so coverage per species is traceable in the merged dataset.
+        record_type = f"{record_type} ({species})"
 
     if owner_gap and classes is None:
         # The 11 classes with no owner-voice training data.
@@ -345,7 +384,7 @@ def generate_synthetic_data(
         for condition in target_classes:
             spec = CONDITION_SPECS[condition]
             print(f"--- {condition} ---")
-            print(_build_prompt(condition, spec, batch_size, style))
+            print(_build_prompt(condition, spec, batch_size, style, species))
             print()
         return
 
@@ -363,7 +402,7 @@ def generate_synthetic_data(
             while len(collected) < samples_per_class and attempts < max_attempts:
                 needed = samples_per_class - len(collected)
                 this_batch = min(batch_size, needed + 10)  # slight overshoot
-                batch = _generate_batch(client, gemini_model, condition, spec, this_batch, style)
+                batch = _generate_batch(client, gemini_model, condition, spec, this_batch, style, species)
                 collected.extend(batch)
                 attempts += 1
 
@@ -439,6 +478,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--owner-gap", action="store_true",
                         help="Target the 11 classes that have NO owner-voice data. Pair with "
                              "--style owner to fill the serving-distribution gap.")
+    parser.add_argument("--species", default=None,
+                        help="Generate examples for a specific species (e.g. rabbit, hamster, bird). "
+                             "Default: dogs and cats. Use to extend coverage to other pets.")
     parser.add_argument("--gemini-model", default="gemini-2.5-flash",
                         help="Gemini model name. Use gemini-2.5-flash with paid credits "
                              "for best quality, or gemini-1.5-flash for free tier (1,500 req/day).")
@@ -460,4 +502,5 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         style=args.style,
         owner_gap=args.owner_gap,
+        species=args.species,
     )
