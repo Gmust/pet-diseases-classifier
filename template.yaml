@@ -6,21 +6,15 @@ Description: >
 
 # ── Overridable parameters ──────────────────────────────────────────────────
 Parameters:
-  GeminiApiKey:
+  RuntimeSecretId:
     Type: String
-    NoEcho: true
-    Description: Gemini API key (from aistudio.google.com/apikey)
+    MinLength: 1
+    Description: Secrets Manager secret id containing API_KEY, GEMINI_API_KEY, and GEMINI_API_KEYS JSON keys
 
   GeminiModel:
     Type: String
     Default: gemini-2.5-flash-lite
     Description: "Gemini model name. Free option: gemini-2.5-flash-lite (20 req/day)"
-
-  ApiKey:
-    Type: String
-    NoEcho: true
-    Default: ""
-    Description: Optional X-API-Key for /predict auth (leave empty to disable)
 
   LowConfidenceThreshold:
     Type: String
@@ -43,25 +37,35 @@ Parameters:
     Description: "Lambda memory (MB). 1769 = a full vCPU, which roughly halves cold-start init time
       vs 1024 (~0.5 vCPU) and is often cheaper per request since duration drops faster than memory rises."
 
+  ReservedConcurrency:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: Maximum concurrent executions, bounding model memory and provider traffic
+
 # ── Shared defaults for all Lambda functions ───────────────────────────────
 Globals:
   Function:
     # 60 s so a cold start (image pull + model load) plus the Gemini call can't
-    # hit the timeout. Warm requests are ~1-3 s; the keep-warm ping keeps it warm.
+    # hit the timeout. Warm requests are ~1-3 s.
     Timeout: 60
     # 1 GB — the quantized ONNX model runs comfortably here. (The old torch image
     # needed ~3 GB; ONNX Runtime is what lets us drop it, cutting GB-seconds ~3x.)
     MemorySize: !Ref FunctionMemory
+    Tracing: Active
     Environment:
       Variables:
-        GEMINI_API_KEY: !Ref GeminiApiKey
+        GEMINI_API_KEY: !Sub "{{resolve:secretsmanager:${RuntimeSecretId}:SecretString:GEMINI_API_KEY}}"
+        GEMINI_API_KEYS: !Sub "{{resolve:secretsmanager:${RuntimeSecretId}:SecretString:GEMINI_API_KEYS}}"
         GEMINI_MODEL: !Ref GeminiModel
-        API_KEY: !Ref ApiKey
+        API_KEY: !Sub "{{resolve:secretsmanager:${RuntimeSecretId}:SecretString:API_KEY}}"
+        ENVIRONMENT: production
         MODEL_BACKEND: onnx
         MODEL_PATH: models/transformer_model_onnx
         LOW_CONFIDENCE_THRESHOLD: !Ref LowConfidenceThreshold
         ROOT_PATH: /Prod
   Api:
+    TracingEnabled: true
     # Gateway-level throttling protects the Lambda (and your Gemini quota) from
     # bursts/abuse. Requests over the limit get a 429 before reaching the function.
     MethodSettings:
@@ -77,6 +81,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       PackageType: Image
+      FunctionName: !Sub "${AWS::StackName}-pet-care-ai"
       # Routes: catch-all proxy + explicit root
       Events:
         ApiProxy:
@@ -89,20 +94,53 @@ Resources:
           Properties:
             Path: /
             Method: ANY
-        # Keep-warm: invoke every 5 minutes so the container stays hot.
-        # The lambda_handler.py swallows EventBridge events (non-HTTP payloads)
-        # so this never reaches Mangum/FastAPI.
-        KeepWarm:
-          Type: Schedule
-          Properties:
-            Schedule: rate(5 minutes)
-            Description: Prevent cold starts by keeping the Lambda container alive
-            Enabled: true
     Metadata:
-      DockerTag: latest
+      DockerTag: immutable-release
       DockerContext: .
       # ONNX Runtime image (no torch). Build the model dir first with export_onnx.py.
       Dockerfile: Dockerfile.lambda.onnx
+
+  PetCareAiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-pet-care-ai"
+      RetentionInDays: 30
+
+  PetCareAiFunctionErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Detect Lambda function errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PetCareAiFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  PetCareAiFunctionThrottles:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Detect exhausted reserved concurrency
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PetCareAiFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
 # ── Outputs ────────────────────────────────────────────────────────────────
 Outputs:

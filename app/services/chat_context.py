@@ -13,10 +13,15 @@ Strategy (see README / design notes):
 - The classifier's tokenizer applies the final 256-token truncation; the char
   budget here is a coarse guard so the newest message always survives it.
 """
+
 from __future__ import annotations
+
+from app.schemas import ChatMessage
 
 # ~256 tokens ≈ 1000-1200 chars for English text. Stay under it with headroom.
 _MAX_INPUT_CHARS = 1100
+_MAX_SAFETY_SUMMARY_CHARS = 1000
+_MAX_SAFETY_MESSAGE_CHARS = 4000
 _SUMMARY_PREFIX = "Prior symptoms: "
 _LATEST_PREFIX = "Latest update: "
 
@@ -50,7 +55,7 @@ def build_classifier_input(symptom_summary: str | None, latest_message: str) -> 
     return f"{summary_part}\n{latest_part}"
 
 
-def latest_user_message(messages) -> str | None:
+def latest_user_message(messages: list[ChatMessage]) -> str | None:
     """Return the content of the most recent user-role message, or None."""
     for msg in reversed(messages):
         role = getattr(msg, "role", None)
@@ -58,3 +63,16 @@ def latest_user_message(messages) -> str | None:
         if role_value == "user":
             return msg.content
     return None
+
+
+def build_safety_context(symptom_summary: str | None, latest_message: str) -> str:
+    """Build bounded context for deterministic emergency-phrase evaluation.
+
+    The API already caps individual chat messages at 4,000 characters. The rolling
+    summary is caller-provided and currently unbounded, so only its most recent
+    1,000 characters are retained. The latest message is always included in full.
+    """
+    summary = (symptom_summary or "").strip()
+    latest = (latest_message or "").strip()[:_MAX_SAFETY_MESSAGE_CHARS]
+    recent_summary = summary[-_MAX_SAFETY_SUMMARY_CHARS:]
+    return "\n".join(part for part in (recent_summary, latest) if part)

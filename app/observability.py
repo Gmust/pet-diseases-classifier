@@ -12,16 +12,21 @@ Stdlib only — no extra runtime dependency, no impact on image size or cold sta
 If you later want first-class CloudWatch metrics, these JSON lines map cleanly
 onto AWS Lambda Powertools or EMF.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp
+
+REQUEST_ID_HEADER = "X-Request-Id"
 
 logger = logging.getLogger("petcare")
 
@@ -60,17 +65,26 @@ def log_event(event: str, **fields: Any) -> None:
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Logs method, path, status code and latency for every request."""
+    """Logs method, path, status code and latency for every request.
+
+    Also assigns a per-request id (`request.state.request_id`), echoed back as
+    the `X-Request-Id` response header, so a stable error response can point
+    the caller/operator at the matching server-side log line without exposing
+    the underlying exception."""
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+        request.state.request_id = request_id
+
         start = time.perf_counter()
         status_code = 500
         try:
             response = await call_next(request)
             status_code = response.status_code
+            response.headers[REQUEST_ID_HEADER] = request_id
             return response
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000, 1)
@@ -83,6 +97,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                         "path": request.url.path,
                         "status": status_code,
                         "duration_ms": duration_ms,
+                        "request_id": request_id,
                     }
                 },
             )

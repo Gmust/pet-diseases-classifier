@@ -28,6 +28,7 @@ python -m app.ml.generate_synthetic \
 # Dry run (print prompts only, no API calls):
 python -m app.ml.generate_synthetic --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,9 +36,12 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from dotenv import load_dotenv
+
+from app.ml.synthetic_quality import apply_quality_gates, quality_summary, tag_provenance
 
 load_dotenv()
 
@@ -165,6 +169,7 @@ _OWNER_GAP_CLASSES = [c for c in CONDITION_SPECS if c not in _OWNER_DATA_CLASSES
 # Gemini client
 # ---------------------------------------------------------------------------
 
+
 def _get_gemini_client():
     try:
         from google import genai
@@ -220,17 +225,27 @@ CRITICAL RULES:
 
 # style -> (system_prompt, record_type, few-shot example line)
 _STYLES: dict[str, tuple[str, str, str]] = {
-    "mixed": (SYSTEM_PROMPT, "Synthetic (Gemini)",
-              '["My dog has been lethargic for 3 days and gums look pale.", "The patient presented with ...", ...]'),
-    "owner": (OWNER_SYSTEM_PROMPT, "Synthetic Owner (Gemini)",
-              '["my dog seems really tired lately and his gums look kinda pale", "she hasnt been herself, keeps hiding and wont eat", ...]'),
-    "clinical": (SYSTEM_PROMPT, "Synthetic Clinical (Gemini)",
-                 '["Patient presents with pallor, lethargy and tachycardia on exam.", "O reports inappetence x3d; MM pale ...", ...]'),
+    "mixed": (
+        SYSTEM_PROMPT,
+        "Synthetic (Gemini)",
+        '["My dog has been lethargic for 3 days and gums look pale.", "The patient presented with ...", ...]',
+    ),
+    "owner": (
+        OWNER_SYSTEM_PROMPT,
+        "Synthetic Owner (Gemini)",
+        '["my dog seems really tired lately and his gums look kinda pale", "she hasnt been herself, keeps hiding and wont eat", ...]',
+    ),
+    "clinical": (
+        SYSTEM_PROMPT,
+        "Synthetic Clinical (Gemini)",
+        '["Patient presents with pallor, lethargy and tachycardia on exam.", "O reports inappetence x3d; MM pale ...", ...]',
+    ),
 }
 
 
-def _build_prompt(condition: str, spec: dict, n: int, style: str = "mixed",
-                  species: str | None = None) -> str:
+def _build_prompt(
+    condition: str, spec: dict, n: int, style: str = "mixed", species: str | None = None
+) -> str:
     _, _, example_line = _STYLES[style]
     focus_species = species or spec["species_focus"]
     voice = (
@@ -260,13 +275,22 @@ Generate the {n} examples now:"""
 # Generation logic
 # ---------------------------------------------------------------------------
 
+
 class QuotaExhaustedError(Exception):
     """Raised when the Gemini daily quota is exhausted — no point retrying."""
+
     pass
 
 
-def _generate_batch(client, model_name: str, condition: str, spec: dict, n: int,
-                    style: str = "mixed", species: str | None = None) -> list[str]:
+def _generate_batch(
+    client: Any,
+    model_name: str,
+    condition: str,
+    spec: dict[str, Any],
+    n: int,
+    style: str = "mixed",
+    species: str | None = None,
+) -> list[str]:
     """Generate a batch of synthetic examples using Gemini."""
     prompt = _build_prompt(condition, spec, n, style, species)
     system_prompt = _STYLES[style][0]
@@ -369,10 +393,7 @@ def generate_synthetic_data(
         raise ValueError(f"Unknown class(es): {unknown}\nAvailable: {available}")
 
     # Estimate API calls needed
-    calls_needed = sum(
-        max(1, (samples_per_class // batch_size) + 1)
-        for _ in target_classes
-    )
+    calls_needed = sum(max(1, (samples_per_class // batch_size) + 1) for _ in target_classes)
     print(f"Generating synthetic data for {len(target_classes)} classes  |  style: {style}")
     print(f"Target: {samples_per_class} examples per class  |  batch size: {batch_size}")
     print(f"Model: {gemini_model}  |  estimated API calls: ~{calls_needed}")
@@ -402,12 +423,16 @@ def generate_synthetic_data(
             while len(collected) < samples_per_class and attempts < max_attempts:
                 needed = samples_per_class - len(collected)
                 this_batch = min(batch_size, needed + 10)  # slight overshoot
-                batch = _generate_batch(client, gemini_model, condition, spec, this_batch, style, species)
+                batch = _generate_batch(
+                    client, gemini_model, condition, spec, this_batch, style, species
+                )
                 collected.extend(batch)
                 attempts += 1
 
                 if batch:
-                    print(f"  batch {attempts}: got {len(batch)} → total {len(collected)}/{samples_per_class}")
+                    print(
+                        f"  batch {attempts}: got {len(batch)} → total {len(collected)}/{samples_per_class}"
+                    )
                 else:
                     print(f"  batch {attempts}: empty response, retrying in 3s...")
                     time.sleep(3)
@@ -433,11 +458,13 @@ def generate_synthetic_data(
         print(f"  → {len(final)} unique examples saved for '{condition}'\n")
 
         for text in final:
-            all_rows.append({
-                "text": text,
-                "condition": condition,
-                "record_type": record_type,
-            })
+            all_rows.append(
+                {
+                    "text": text,
+                    "condition": condition,
+                    "record_type": record_type,
+                }
+            )
 
         time.sleep(0.5)  # gentle pause between classes
 
@@ -446,12 +473,20 @@ def generate_synthetic_data(
         return
 
     df = pd.DataFrame(all_rows)
+    df = tag_provenance(df, model_name=gemini_model)
+    df = apply_quality_gates(df)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output, index=False)
 
+    summary = quality_summary(df)
     print(f"{'='*50}")
     print(f"Generated {len(df)} total synthetic examples")
+    print(
+        f"Quality gates: {summary['leaks_diagnosis']} leak the diagnosis, "
+        f"{summary['near_duplicate']} are near-duplicates, "
+        f"{summary['needs_review']} flagged for manual review"
+    )
     print("\nBreakdown:")
     print(df["condition"].value_counts().to_string())
     print(f"\nSaved to: {output}")
@@ -461,33 +496,56 @@ def generate_synthetic_data(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate synthetic pet-condition training data via Gemini.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--output", default="data/synthetic_data.parquet",
-                        help="Output parquet path.")
-    parser.add_argument("--samples-per-class", type=int, default=100,
-                        help="Target number of examples per class.")
-    parser.add_argument("--classes", nargs="+", default=None,
-                        help="Specific classes to generate. Default: all weak classes.")
-    parser.add_argument("--style", choices=["mixed", "owner", "clinical"], default="mixed",
-                        help="Writing register. 'owner' = how users actually type (fills the "
-                             "owner-language gap); 'clinical' = vet notes; 'mixed' = both.")
-    parser.add_argument("--owner-gap", action="store_true",
-                        help="Target the 11 classes that have NO owner-voice data. Pair with "
-                             "--style owner to fill the serving-distribution gap.")
-    parser.add_argument("--species", default=None,
-                        help="Generate examples for a specific species (e.g. rabbit, hamster, bird). "
-                             "Default: dogs and cats. Use to extend coverage to other pets.")
-    parser.add_argument("--gemini-model", default="gemini-2.5-flash",
-                        help="Gemini model name. Use gemini-2.5-flash with paid credits "
-                             "for best quality, or gemini-1.5-flash for free tier (1,500 req/day).")
-    parser.add_argument("--batch-size", type=int, default=50,
-                        help="Examples to request per API call. Larger = fewer quota-consuming calls.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print prompts only, no API calls.")
+    parser.add_argument(
+        "--output", default="data/synthetic_data.parquet", help="Output parquet path."
+    )
+    parser.add_argument(
+        "--samples-per-class", type=int, default=100, help="Target number of examples per class."
+    )
+    parser.add_argument(
+        "--classes",
+        nargs="+",
+        default=None,
+        help="Specific classes to generate. Default: all weak classes.",
+    )
+    parser.add_argument(
+        "--style",
+        choices=["mixed", "owner", "clinical"],
+        default="mixed",
+        help="Writing register. 'owner' = how users actually type (fills the "
+        "owner-language gap); 'clinical' = vet notes; 'mixed' = both.",
+    )
+    parser.add_argument(
+        "--owner-gap",
+        action="store_true",
+        help="Target the 11 classes that have NO owner-voice data. Pair with "
+        "--style owner to fill the serving-distribution gap.",
+    )
+    parser.add_argument(
+        "--species",
+        default=None,
+        help="Generate examples for a specific species (e.g. rabbit, hamster, bird). "
+        "Default: dogs and cats. Use to extend coverage to other pets.",
+    )
+    parser.add_argument(
+        "--gemini-model",
+        default="gemini-2.5-flash",
+        help="Gemini model name. Use gemini-2.5-flash with paid credits "
+        "for best quality, or gemini-1.5-flash for free tier (1,500 req/day).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Examples to request per API call. Larger = fewer quota-consuming calls.",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print prompts only, no API calls.")
     return parser.parse_args()
 
 

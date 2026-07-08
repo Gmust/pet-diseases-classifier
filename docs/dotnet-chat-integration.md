@@ -51,6 +51,46 @@ Step 6 matters most: if you don't save the returned `symptomSummary`, the
 conversation loses its memory. (On `general` turns the summary is returned
 unchanged — still safe to persist.)
 
+## How the memory actually works (read this — it prevents the common mistake)
+
+There are **two layers of context**, and neither of them is the prediction:
+
+1. **`messages[]` — the conversational memory.** The literal transcript of the
+   chat, including the assistant's own previous answers (role `"assistant"`). This
+   is what lets the reply flow naturally ("you mentioned a runny nose earlier…").
+2. **`symptomSummary` — the medical memory.** A compact, rolling distillation of
+   every symptom mentioned so far. This is what survives even when you trim old
+   messages, and it's what the classifier runs on.
+
+**You do NOT store or resend the prediction. The prediction is recomputed from
+scratch on every turn.** This is the key idea, and it's deliberate:
+
+```
+prediction = classifier(symptomSummary + newestUserMessage)
+```
+
+Because the summary already holds every symptom so far, the classifier always
+predicts on the **full picture** — it doesn't need last turn's result, it re-derives
+a fresh one. That's why a prediction can *change* between turns (e.g. "Ear
+Conditions" on turn 1 → "Respiratory Conditions" on turn 2 as detail accumulates):
+the recomputed prediction is simply more informed. **Locking to an old prediction
+would be a bug, not a feature.**
+
+The rule of thumb: **persist the *source* (the symptom summary + the transcript),
+recompute the *derived value* (the prediction) each turn.** A prediction is derived
+state — storing it just invites staleness. Keep the symptoms; the prediction is
+always correct and current.
+
+So per turn your backend persists exactly two things and replays them:
+- the **message history** (append the user message, then append the assistant's
+  `answer` as a `"assistant"` message), and
+- the latest **`symptomSummary`** (overwrite it with the response value).
+
+You never send predictions back. *(Optional: if you want the model to explicitly
+reconcile a shift — "earlier this looked like an ear issue, but now…" — you can
+store last turn's `predictedCondition` and pass it as a hint. Not required, and not
+part of the base contract.)*
+
 ## Endpoint contract
 
 ```
@@ -236,3 +276,73 @@ transport/timeout.
 - Always display `disclaimer`. This is a triage aid, not a diagnosis.
 - `prediction.predictedCondition` can change turn to turn as symptoms accumulate — render the current one; don't lock it.
 - Without a `GEMINI_API_KEY` on the server, general-care answering isn't available and the service defaults to the `health` path — set the key in the deploy environment.
+
+---
+
+## Implementation prompt (paste into your AI coding assistant)
+
+> Copy everything in the block below into Cursor/Copilot/Claude to scaffold the
+> full backend flow. It encodes the rules above so the agent can't get the memory
+> mechanism wrong.
+
+```text
+Implement a stateful pet-care chat flow in our ASP.NET Core backend that talks to
+an external, STATELESS AI microservice at POST {AI_BASE_URL}/chat. Our backend owns
+all conversation state; the microservice stores nothing.
+
+## The contract with the microservice
+Request JSON (camelCase):
+  { "sessionId": string?, "petType": string?, "symptomSummary": string?,
+    "messages": [ { "role": "user"|"assistant", "content": string } ] }
+  - messages are oldest-first; the LAST entry must be the new user message.
+  - Auth: header "X-API-Key: <secret>" (from config PetAi:ApiKey), only if configured.
+
+Response JSON (camelCase):
+  { "mode": "general"|"health"|"emergency", "answer": string,
+    "symptomSummary": string, "needsClarification": bool, "disclaimer": string,
+    "relatedTopics": string[], "prediction": null | {
+      "predictedCondition": string, "confidence": number,
+      "topK": [ { "condition": string, "confidence": number } ],
+      "urgency": "MONITOR"|"CONSULT_SOON"|"URGENT"|"EMERGENCY",
+      "specialist": string, "diseaseCategory": string, "homeAdvice": string[] } }
+
+## Core rules (do not violate)
+1. STATE = two things only: the message history, and a rolling `symptomSummary` string.
+2. Persist the source, recompute the derived value. NEVER store or resend the
+   `prediction` — the microservice recomputes it every turn from symptomSummary +
+   the new message. The prediction may change between turns; that is correct.
+3. Every turn: append the user's message; call /chat; append the response `answer`
+   as an "assistant" message; OVERWRITE the stored symptomSummary with the response
+   value (even on `mode=general`, where it's unchanged).
+4. Send only the last ~8 messages to /chat (cost control), but ALWAYS send the
+   latest symptomSummary — it carries the older context that the trimmed messages drop.
+5. On timeout/5xx: keep the user's message, surface a soft retry, and DO NOT
+   overwrite symptomSummary (so the next attempt resumes from the last good state).
+
+## Deliverables
+- EF Core entities: ChatSession { Id, UserId, PetType?, SymptomSummary?, CreatedAt,
+  UpdatedAt, ICollection<ChatMessage> } and ChatMessage { Id, SessionId, Role,
+  Content, CreatedAt }. Add a migration.
+- DTOs matching the camelCase contract above (System.Text.Json). Enum PetType
+  serialized with JsonNamingPolicy.SnakeCaseLower so GuineaPig -> "guinea_pig".
+- A typed HttpClient `PetAiClient` (BaseAddress = PetAi:BaseUrl, Timeout 60s,
+  default header X-API-Key = PetAi:ApiKey) with `Task<ChatTurnResponse> ChatAsync(
+  ChatTurnRequest, CancellationToken)` that throws on non-success.
+- A `ChatService.HandleUserMessageAsync(Guid sessionId, string userText, CancellationToken)`
+  that implements the per-turn flow and the Core rules above, saving to the DB.
+- A minimal API / controller endpoint `POST /api/sessions/{sessionId}/messages`
+  that takes { text }, calls ChatService, and returns the ChatTurnResponse.
+- Map `mode` to the client response: general -> answer + relatedTopics (no condition
+  card); health -> answer + prediction; emergency -> answer + prediction with an
+  "urgent, contact an emergency vet" flag. Always include disclaimer.
+- Unit tests: (a) assistant answer is appended and symptomSummary overwritten each
+  turn; (b) on a simulated 5xx, symptomSummary is NOT overwritten; (c) only the last
+  ~8 messages are sent but symptomSummary is always included.
+
+Use the existing DTO and orchestration snippets in docs/dotnet-chat-integration.md
+as the reference implementation; extend rather than diverge from them.
+```
+
+That prompt hands the agent the contract, the non-negotiable memory rules, and a
+concrete deliverables list — so what it builds matches this doc instead of
+reinventing the flow.

@@ -21,6 +21,7 @@ This module adds two deterministic, local (no-API) guards:
 Both are intentionally simple and conservative: false positives (over-warning)
 are acceptable here; false negatives are not.
 """
+
 from __future__ import annotations
 
 import re
@@ -31,35 +32,98 @@ from app.schemas import UrgencyLevel
 # Each tuple: (human-readable reason, regex of trigger phrases).
 # Phrases are matched case-insensitively on word boundaries where it matters.
 _RED_FLAG_RULES: list[tuple[str, re.Pattern[str]]] = [
-    ("not breathing / difficulty breathing",
-     re.compile(r"\b(not|n't|stopped|can'?t|cannot|trouble|difficulty|struggling to|labou?red)\s+breath", re.I)),
-    ("collapse / unresponsive",
-     re.compile(r"\b(collaps\w*|unconscious|unresponsive|won'?t wake|passed out|faint\w*)\b", re.I)),
-    ("active seizure / convulsions",
-     re.compile(r"\b(seizur\w*|convuls\w*|fitting|having a fit)\b", re.I)),
-    ("suspected bloat / GDV",
-     re.compile(r"\b(bloat\w*|gdv|distended (abdomen|belly|stomach)|swollen (hard )?(abdomen|belly|stomach)|hard,? swollen)\b", re.I)),
-    ("unable to urinate (blocked)",
-     re.compile(r"\b(can'?t|cannot|unable to|straining to|trying but no|not able to)\s+(pee|urinat\w*|wee)\b", re.I)),
-    ("toxin / poison ingestion",
-     re.compile(r"\b(ate|ingest\w*|swallow\w*|got into|chewed)\b.{0,30}\b(poison|rat ?bait|antifreeze|chocolate|xylitol|grapes?|raisins?|lily|lilies|rodenticide|medication|pills?|toxic)\b", re.I)),
-    ("severe / uncontrolled bleeding",
-     re.compile(
-         r"\b(heav\w*|severe|profuse|won'?t stop|uncontroll\w*|gushing|spurting)\b.{0,25}\bbleed"
-         r"|\bbleed\w*\b.{0,25}\b(won'?t stop|uncontroll\w*|profuse|severe|heav\w*|gushing|spurting)\b",
-         re.I)),
-    ("pale / blue gums",
-     re.compile(
-         r"\b(blue|grey|gray|white|pale)\b.{0,15}\bgums?\b"
-         r"|\bgums?\b.{0,15}\b(blue|grey|gray|white|pale)\b",
-         re.I)),
-    ("heatstroke",
-     re.compile(r"\b(heat ?stroke|overheat\w*)\b", re.I)),
-    ("trauma / hit by car",
-     re.compile(r"\b(hit by (a )?car|hbc|fell from|major trauma|run over)\b", re.I)),
-    ("pregnancy emergency (dystocia)",
-     re.compile(r"\b(in labou?r|giving birth|whelp\w*|dystocia)\b.{0,30}\b(hours?|straining|stuck|can'?t)\b", re.I)),
+    (
+        "not breathing / difficulty breathing",
+        re.compile(
+            r"\b(not|n't|stopped|can'?t|cannot|trouble|difficulty|struggling to|labou?red)\s+breath",
+            re.I,
+        ),
+    ),
+    (
+        "collapse / unresponsive",
+        re.compile(
+            r"\b(collaps\w*|unconscious|unresponsive|won'?t wake|passed out|faint\w*)\b", re.I
+        ),
+    ),
+    (
+        "active seizure / convulsions",
+        re.compile(r"\b(seizur\w*|convuls\w*|fitting|having a fit)\b", re.I),
+    ),
+    (
+        "suspected bloat / GDV",
+        re.compile(
+            r"\b(bloat\w*|gdv|distended (abdomen|belly|stomach)|"
+            r"swollen (hard )?(abdomen|belly|stomach)|hard,? swollen|"
+            r"(abdomen|belly|stomach) is hard and swollen)\b",
+            re.I,
+        ),
+    ),
+    (
+        "unable to urinate (blocked)",
+        re.compile(
+            r"\b(can'?t|cannot|unable to|straining to|trying but no|not able to)\s+(pee|urinat\w*|wee)\b",
+            re.I,
+        ),
+    ),
+    (
+        "toxin / poison ingestion",
+        re.compile(
+            r"\b(ate|ingest\w*|swallow\w*|got into|chewed)\b.{0,30}\b(poison|rat ?bait|antifreeze|chocolate|xylitol|grapes?|raisins?|lily|lilies|rodenticide|medication|pills?|toxic)\b",
+            re.I,
+        ),
+    ),
+    (
+        "severe / uncontrolled bleeding",
+        re.compile(
+            r"\b(heav\w*|severe|profuse|won'?t stop|uncontroll\w*|gushing|spurting)\b.{0,25}\bbleed"
+            r"|\bbleed\w*\b.{0,25}\b(won'?t stop|uncontroll\w*|profuse|severe|heav\w*|gushing|spurting)\b",
+            re.I,
+        ),
+    ),
+    (
+        "pale / blue gums",
+        re.compile(
+            r"\b(blue|grey|gray|white|pale)\b.{0,15}\bgums?\b"
+            r"|\bgums?\b.{0,15}\b(blue|grey|gray|white|pale)\b",
+            re.I,
+        ),
+    ),
+    ("heatstroke", re.compile(r"\b(heat ?stroke|overheat\w*)\b", re.I)),
+    (
+        "trauma / hit by car",
+        re.compile(r"\b(hit by (a )?car|hbc|fell from|major trauma|run over)\b", re.I),
+    ),
+    (
+        "pregnancy emergency (dystocia)",
+        re.compile(
+            r"\b(in labou?r|giving birth|whelp\w*|dystocia)\b.{0,30}\b(hours?|straining|stuck|can'?t)\b",
+            re.I,
+        ),
+    ),
 ]
+
+# Narrowly remove common statements that explicitly say a red-flag finding is
+# absent. This is intentionally not a generic negation engine: phrases such as
+# "not breathing" are themselves emergencies and must remain available to the
+# positive rules above.
+_NEGATED_FINDINGS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:no|without)\s+(?:active\s+)?(?:seizures?|convulsions?|collapse)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:did not|didn't|has not|hasn't|had not|hadn't|is not|isn't|was not|wasn't)\s+"
+        r"(?:have|had|having|experience|experienced)?\s*(?:a\s+)?"
+        r"(?:seizure|convulsion|collapse)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:gums?\s+(?:are|look|seem)\s+not|gums?\s+(?:aren't|weren't))\s+"
+        r"(?:pale|blue|grey|gray|white)\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:is not|isn't|not)\s+bloat(?:ed|ing)?\b", re.I),
+)
 
 
 @dataclass(frozen=True)
@@ -72,8 +136,11 @@ def detect_red_flags(text: str) -> RedFlag:
     """Return a RedFlag if the text contains an emergency phrase."""
     if not text:
         return RedFlag(False)
+    searchable = text
+    for pattern in _NEGATED_FINDINGS:
+        searchable = pattern.sub(" ", searchable)
     for reason, pattern in _RED_FLAG_RULES:
-        if pattern.search(text):
+        if pattern.search(searchable):
             return RedFlag(True, reason)
     return RedFlag(False)
 

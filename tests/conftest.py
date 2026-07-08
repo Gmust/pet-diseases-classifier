@@ -8,6 +8,7 @@ The suite runs fully offline:
 - Gemini is left unconfigured (no API key), so the services use their
   deterministic local fallbacks.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,6 +20,7 @@ os.environ.pop("API_KEY", None)
 os.environ.pop("GEMINI_API_KEY", None)
 
 from app.ml.predictor import PredictionResult  # noqa: E402  (after env setup)
+from app.ml.protocols import ClassifierMetadata  # noqa: E402  (after env setup)
 
 
 class FakePredictor:
@@ -33,6 +35,15 @@ class FakePredictor:
         ]
         self.last_input: str | None = None
 
+    @property
+    def metadata(self) -> ClassifierMetadata:
+        return ClassifierMetadata(
+            backend="fake",
+            model_path="",
+            labels=("Digestive Issues", self.condition),
+            model_version="test-model-v1",
+        )
+
     def predict(self, text: str) -> PredictionResult:
         if not text.strip():
             raise ValueError("Text input cannot be empty.")
@@ -46,6 +57,14 @@ class FakePredictor:
         items = [PredictionResult(self.condition, self.confidence)]
         items += [PredictionResult(c, p) for c, p in self.runners_up]
         return items[:k]
+
+    def predict_batch(self, texts: list[str], batch_size: int = 32) -> list[PredictionResult]:
+        return [self.predict(text) for text in texts]
+
+    def predict_top_k_batch(
+        self, texts: list[str], k: int = 3, batch_size: int = 32
+    ) -> list[list[PredictionResult]]:
+        return [self.predict_top_k(text, k=k) for text in texts]
 
 
 @pytest.fixture
@@ -62,9 +81,7 @@ def client(monkeypatch, fake_predictor):
     monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     # Patch model loading so the lifespan uses the fake (no torch, no weights).
-    monkeypatch.setattr(
-        main.Predictor, "from_paths", classmethod(lambda cls, **kw: fake_predictor)
-    )
+    monkeypatch.setattr(main.Predictor, "from_paths", classmethod(lambda cls, **kw: fake_predictor))
     # ensure_services() caches on app.state and is idempotent, so reset it per test
     # to force a rebuild with THIS test's fake_predictor.
     main.app.state.services = None

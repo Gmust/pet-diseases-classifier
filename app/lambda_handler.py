@@ -5,11 +5,10 @@ Wraps the FastAPI app with Mangum so API Gateway HTTP events are translated
 into ASGI requests.
 
 Model loading happens at INIT (module import) via ensure_services(), so the model
-is in memory before the first request — and crucially, before a keep-warm ping
-returns. EventBridge keep-warm pings also call ensure_services(), so a container
-that AWS recycled and re-warmed comes back with the model already loaded instead
-of paying the load on the next real request.
+is in memory before the first request. Non-HTTP invocations are handled safely,
+but no scheduled keep-warm event is deployed.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -27,8 +26,7 @@ _mangum_handler = Mangum(app, lifespan="auto")
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    # Keep-warm ping (non-HTTP scheduled event): make sure the model is loaded
-    # into THIS container, then return without going through Mangum.
+    # Ignore non-HTTP invocations rather than passing them to Mangum.
     if "httpMethod" not in event and "requestContext" not in event:
         ensure_services()
         return {"statusCode": 200, "body": "warm"}

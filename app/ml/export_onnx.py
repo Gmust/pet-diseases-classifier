@@ -22,6 +22,7 @@ python -m app.ml.export_onnx \
     --model-dir models/transformer_model \
     --output-dir models/transformer_model_onnx
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,17 +32,33 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export model to quantized ONNX.")
-    parser.add_argument("--model-dir", default="models/transformer_model",
-                        help="HuggingFace-format directory produced by train.py.")
-    parser.add_argument("--output-dir", default="models/transformer_model_onnx",
-                        help="Destination directory for the ONNX model + tokenizer.")
-    parser.add_argument("--no-quantize", action="store_true",
-                        help="Export fp32 ONNX only (skip int8 dynamic quantization).")
-    parser.add_argument("--keep-fp32", action="store_true",
-                        help="Keep the fp32 model.onnx after quantizing. By default it is removed "
-                             "so the deploy image only ships the int8 model (~260 MB smaller).")
-    parser.add_argument("--opset", type=int, default=18,
-                        help="ONNX opset version (>=18 recommended for distilbert).")
+    parser.add_argument(
+        "--model-dir",
+        default="models/transformer_model",
+        help="HuggingFace-format directory produced by train.py.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="models/transformer_model_onnx",
+        help="Destination directory for the ONNX model + tokenizer.",
+    )
+    parser.add_argument(
+        "--no-quantize",
+        action="store_true",
+        help="Export fp32 ONNX only (skip int8 dynamic quantization).",
+    )
+    parser.add_argument(
+        "--keep-fp32",
+        action="store_true",
+        help="Keep the fp32 model.onnx after quantizing. By default it is removed "
+        "so the deploy image only ships the int8 model (~260 MB smaller).",
+    )
+    parser.add_argument(
+        "--opset",
+        type=int,
+        default=18,
+        help="ONNX opset version (>=18 recommended for distilbert).",
+    )
     args = parser.parse_args()
 
     src = Path(args.model_dir)
@@ -52,7 +69,9 @@ def main() -> None:
     try:
         from optimum.exporters.onnx import main_export
     except ImportError as exc:  # pragma: no cover
-        raise SystemExit('Missing build dep. Install: pip install "optimum[exporters]" onnxruntime') from exc
+        raise SystemExit(
+            'Missing build dep. Install: pip install "optimum[exporters]" onnxruntime'
+        ) from exc
 
     print(f"Exporting {src} → ONNX (opset {args.opset}) …")
     main_export(
@@ -93,7 +112,9 @@ def main() -> None:
         # ONNX external-data files (large models) sit next to the .onnx — clean those too.
         for extra in out.glob("model.onnx_data*"):
             extra.unlink()
-        print(f"Removed fp32 intermediate model.onnx (~{size_mb:.0f} MB) — use --keep-fp32 to retain it.")
+        print(
+            f"Removed fp32 intermediate model.onnx (~{size_mb:.0f} MB) — use --keep-fp32 to retain it."
+        )
 
     print(f"Done (int8 ONNX). Saved to: {out}  ({quant_onnx.name})")
     print("Deploy with: MODEL_BACKEND=onnx MODEL_PATH=" + str(out))

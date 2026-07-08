@@ -13,6 +13,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+    from app.ml.protocols import ClassifierMetadata
+
+from app.ml.model_registry import release_version
+from app.ml.model_validation import (
+    validate_id2label,
+    validate_required_files,
+    validate_top_k,
+    verify_checksums,
+)
+
 
 @dataclass(frozen=True)
 class PredictionResult:
@@ -34,30 +44,39 @@ class Predictor:
 
     def __init__(
         self,
-        model: "AutoModelForSequenceClassification",
-        tokenizer: "AutoTokenizer",
+        model: AutoModelForSequenceClassification,
+        tokenizer: AutoTokenizer,
         id2label: dict[int, str],
-        device: "torch.device",
+        device: torch.device,
+        model_path: str = "",
+        model_version: str = "unversioned-local",
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
         self._id2label = id2label
         self._device = device
+        self._model_path = model_path
+        self._model_version = model_version
+
+    @property
+    def metadata(self) -> ClassifierMetadata:
+        from app.ml.protocols import ClassifierMetadata
+
+        labels = tuple(self._id2label[i] for i in sorted(self._id2label))
+        return ClassifierMetadata(
+            backend="torch",
+            model_path=self._model_path,
+            labels=labels,
+            model_version=self._model_version,
+        )
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_paths(cls, model_path: str, **_ignored) -> "Predictor":
-        """
-        Load from a directory saved by train.py (HuggingFace format).
-
-        The `**_ignored` signature intentionally swallows legacy keyword
-        arguments such as `classifier_path` and `vectorizer_path` so that
-        callers migrating from the old TF-IDF predictor need only change
-        the `model_path` value — no other code changes required.
-        """
+    def from_paths(cls, model_path: str) -> Predictor:
+        """Load a validated Hugging Face directory produced by train.py."""
         model_dir = Path(model_path)
         if not model_dir.exists():
             raise FileNotFoundError(
@@ -68,6 +87,8 @@ class Predictor:
                 "--label-map data/label_map.json "
                 f"--model-dir {model_dir}"
             )
+        validate_required_files(model_dir, ["config.json"])
+        verify_checksums(model_dir)
 
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -86,8 +107,16 @@ class Predictor:
 
         # id2label is stored in model.config by train.py
         id2label: dict[int, str] = {int(k): v for k, v in model.config.id2label.items()}
+        validate_id2label(id2label)
 
-        return cls(model=model, tokenizer=tokenizer, id2label=id2label, device=device)
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            id2label=id2label,
+            device=device,
+            model_path=str(model_dir),
+            model_version=release_version(model_dir),
+        )
 
     # ------------------------------------------------------------------
     # Inference
@@ -126,6 +155,7 @@ class Predictor:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Text input cannot be empty.")
+        k = validate_top_k(k, len(self._id2label))
 
         inputs = self._tokenizer(
             cleaned,
@@ -140,7 +170,7 @@ class Predictor:
             logits = self._model(**inputs).logits
             probabilities = torch.softmax(logits, dim=-1)[0]
 
-        top_indices = probabilities.topk(min(k, len(self._id2label))).indices.tolist()
+        top_indices = probabilities.topk(k).indices.tolist()
         return [
             PredictionResult(
                 predicted_condition=self._id2label[idx],
@@ -148,3 +178,59 @@ class Predictor:
             )
             for idx in top_indices
         ]
+
+    def predict_batch(self, texts: list[str], batch_size: int = 32) -> list[PredictionResult]:
+        """Return batched top-1 predictions."""
+        return [row[0] for row in self.predict_top_k_batch(texts, k=1, batch_size=batch_size)]
+
+    def predict_top_k_batch(
+        self,
+        texts: list[str],
+        k: int = 3,
+        batch_size: int = 32,
+    ) -> list[list[PredictionResult]]:
+        """Return top-k predictions using one model forward pass per batch."""
+        import torch
+
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1.")
+        k = validate_top_k(k, len(self._id2label))
+        results: list[list[PredictionResult]] = []
+        for start in range(0, len(texts), batch_size):
+            chunk = texts[start : start + batch_size]
+            cleaned = [t.strip() for t in chunk]
+            for offset, c in enumerate(cleaned):
+                if not c:
+                    raise ValueError(f"Text input cannot be empty (index {start + offset}).")
+
+            inputs = self._tokenizer(
+                cleaned,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self._MAX_LENGTH,
+                padding=True,
+            )
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                logits = self._model(**inputs).logits
+                probabilities = torch.softmax(logits, dim=-1)
+
+            top_probabilities, top_indices = probabilities.topk(k, dim=-1)
+            for row_indices, row_probabilities in zip(
+                top_indices.tolist(), top_probabilities.tolist(), strict=True
+            ):
+                results.append(
+                    [
+                        PredictionResult(
+                            predicted_condition=self._id2label[index],
+                            confidence=float(confidence),
+                        )
+                        for index, confidence in zip(
+                            row_indices,
+                            row_probabilities,
+                            strict=True,
+                        )
+                    ]
+                )
+        return results

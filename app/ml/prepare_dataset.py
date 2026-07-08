@@ -26,23 +26,18 @@ python -m app.ml.prepare_dataset \
     --downsample-max 600 \
     --owner-eval-frac 0.3
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 import pandas as pd
 
-_WS = re.compile(r"\s+")
-_PUNCT = re.compile(r"[^\w\s]")
-
-
-def normalize_text(text: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — for dup detection."""
-    text = _PUNCT.sub("", str(text).lower().strip())
-    return _WS.sub(" ", text)
+from app.ml.dataset_pipeline import RejectionReport, dedup_content, drop_empty_or_short
+from app.ml.dataset_schema import assign_row_ids, validate_label_map
+from app.ml.split_manifest import SplitLeakageError, write_split_manifest
 
 
 def load_label_map(path: str | None) -> dict[str, str]:
@@ -54,18 +49,13 @@ def load_label_map(path: str | None) -> dict[str, str]:
 
 def apply_label_map(df: pd.DataFrame, label_map: dict[str, str]) -> pd.DataFrame:
     df = df.copy()
-    df["condition"] = df["condition"].astype(str).str.strip().map(
-        lambda c: label_map.get(c, c)
-    )
+    df["condition"] = df["condition"].astype(str).str.strip().map(lambda c: label_map.get(c, c))
     return df
 
 
 def dedup(df: pd.DataFrame) -> pd.DataFrame:
     """Drop exact + near-duplicate rows by normalized text (keep first)."""
-    df = df.copy()
-    df["_norm"] = df["text"].map(normalize_text)
-    df = df.drop_duplicates(subset=["_norm"]).drop(columns="_norm")
-    return df.reset_index(drop=True)
+    return dedup_content(df, RejectionReport())
 
 
 def carve_owner_eval(
@@ -95,7 +85,11 @@ def downsample(df: pd.DataFrame, max_per_class: int | None, seed: int = 42) -> p
         return df.reset_index(drop=True)
     parts = []
     for _, group in df.groupby("condition"):
-        parts.append(group.sample(n=max_per_class, random_state=seed) if len(group) > max_per_class else group)
+        parts.append(
+            group.sample(n=max_per_class, random_state=seed)
+            if len(group) > max_per_class
+            else group
+        )
     return pd.concat(parts).sample(frac=1, random_state=seed).reset_index(drop=True)
 
 
@@ -109,32 +103,58 @@ def main() -> None:
     p.add_argument("--label-map", default="data/label_map.json")
     p.add_argument("--train-out", default="data/train_balanced.parquet")
     p.add_argument("--eval-out", default="data/owner_eval.parquet")
-    p.add_argument("--downsample-max", type=int, default=600,
-                   help="Cap rows per class in the training set (0 = no cap).")
-    p.add_argument("--owner-eval-frac", type=float, default=0.3,
-                   help="Fraction of owner-observation rows held out for evaluation.")
+    p.add_argument(
+        "--downsample-max",
+        type=int,
+        default=600,
+        help="Cap rows per class in the training set (0 = no cap).",
+    )
+    p.add_argument(
+        "--owner-eval-frac",
+        type=float,
+        default=0.3,
+        help="Fraction of owner-observation rows held out for evaluation.",
+    )
     p.add_argument("--owner-record-type", default="Owner Observation")
     p.add_argument("--min-text-length", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--split-manifest-out",
+        default=None,
+        help="Path for the row-id-keyed split manifest (default: <train-out>.split-manifest.json).",
+    )
     args = p.parse_args()
+
+    label_map = load_label_map(args.label_map)
+    label_map_problems = validate_label_map(label_map)
+    if label_map_problems:
+        raise SystemExit("Label map validation failed:\n" + "\n".join(label_map_problems))
 
     path = Path(args.input)
     df = pd.read_parquet(path) if path.suffix in {".parquet", ".pq"} else pd.read_csv(path)
-    df = df.dropna(subset=["text", "condition"]).copy()
-    df["text"] = df["text"].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
-    df = df[df["text"].str.len() >= args.min_text_length]
-    df = apply_label_map(df, load_label_map(args.label_map))
+    report = RejectionReport()
+    df = drop_empty_or_short(df, args.min_text_length, report)
+    df = apply_label_map(df, label_map)
 
     print(f"Loaded {len(df)} rows, {df['condition'].nunique()} classes")
 
     # Dedup BEFORE carving the holdout so eval rows can't be duplicates of train rows.
     before = len(df)
-    df = dedup(df)
+    df = dedup_content(df, report)
     print(f"Dedup: {before} → {len(df)} rows ({before - len(df)} duplicates removed)")
 
-    train_df, eval_df = carve_owner_eval(df, args.owner_record_type, args.owner_eval_frac, args.seed)
-    print(f"Owner-language holdout: {len(eval_df)} rows "
-          f"({eval_df['condition'].nunique() if len(eval_df) else 0} classes)")
+    # Rows already tagged with provenance upstream (fetch_and_merge.py source
+    # adapters) keep their row_id; anything else gets one assigned here.
+    if "row_id" not in df.columns:
+        df = assign_row_ids(df, source="prepared")
+
+    train_df, eval_df = carve_owner_eval(
+        df, args.owner_record_type, args.owner_eval_frac, args.seed
+    )
+    print(
+        f"Owner-language holdout: {len(eval_df)} rows "
+        f"({eval_df['condition'].nunique() if len(eval_df) else 0} classes)"
+    )
 
     train_df = downsample(train_df, args.downsample_max, args.seed)
 
@@ -144,23 +164,35 @@ def main() -> None:
         print("\n=== Owner holdout class distribution ===")
         print(_dist(eval_df))
 
-    # Sanity: no normalized-text overlap between train and eval.
-    overlap = set(train_df["text"].map(normalize_text)) & set(eval_df["text"].map(normalize_text))
-    if overlap:
-        print(f"\n[warn] {len(overlap)} overlapping texts between train and eval — investigate.")
-    else:
-        print("\nNo train/eval text overlap. Holdout is clean.")
+    # Hard gate: fail the build if any duplicate-text family crosses the
+    # train/eval boundary (see app.ml.split_manifest). Nothing is written on failure.
+    splits = {"train": train_df, "eval": eval_df} if len(eval_df) else {"train": train_df}
+    manifest_path = args.split_manifest_out or f"{args.train_out}.split-manifest.json"
+    try:
+        write_split_manifest(splits, manifest_path)
+    except SplitLeakageError as exc:
+        raise SystemExit(f"Split publication failed: {exc}") from exc
+    print(f"\nNo train/eval text overlap. Wrote split manifest to {manifest_path}")
 
     Path(args.train_out).parent.mkdir(parents=True, exist_ok=True)
     train_df.to_parquet(args.train_out, index=False)
     if len(eval_df):
         eval_df.to_parquet(args.eval_out, index=False)
-    print(f"\nWrote {args.train_out} ({len(train_df)} rows)"
-          + (f" and {args.eval_out} ({len(eval_df)} rows)" if len(eval_df) else ""))
+    print(
+        f"\nWrote {args.train_out} ({len(train_df)} rows)"
+        + (f" and {args.eval_out} ({len(eval_df)} rows)" if len(eval_df) else "")
+    )
+    print(f"\nRejection report ({report.total} rows dropped total):")
+    for reason, count in report.as_dict().items():
+        print(f"  {reason}: {count}")
     print("\nNext: retrain on the balanced set, then score the holdout:")
-    print(f"  python -m app.ml.train --data-path {args.train_out} "
-          f"--label-map {args.label_map} --model-dir models/transformer_model --loss ce")
-    print(f"  python -m app.ml.evaluate --model-dir models/transformer_model --data {args.eval_out}")
+    print(
+        f"  python -m app.ml.train --data-path {args.train_out} "
+        f"--label-map {args.label_map} --model-dir models/transformer_model --loss ce"
+    )
+    print(
+        f"  python -m app.ml.evaluate --model-dir models/transformer_model --data {args.eval_out}"
+    )
 
 
 if __name__ == "__main__":

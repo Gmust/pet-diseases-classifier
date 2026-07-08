@@ -34,14 +34,19 @@ COPY app/ ./app/
 
 # Quantized ONNX model (produced by app/ml/export_onnx.py)
 COPY models/transformer_model_onnx/ ./models/transformer_model_onnx/
+RUN python -m app.ml.model_registry /var/task/models/transformer_model_onnx
 
 COPY .env.example .env.example
 
-# Lambda runtime user needs read access
-RUN chmod -R 755 /var/task/
+# Lambda supplies a least-privileged runtime user; keep application/model files read-only.
+RUN chown -R root:root /var/task && \
+    find /var/task -type d -exec chmod 0555 {} + && \
+    find /var/task -type f -exec chmod 0444 {} +
 
 ENV MODEL_BACKEND=onnx \
-    MODEL_PATH=models/transformer_model_onnx
+    MODEL_PATH=models/transformer_model_onnx \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["/usr/local/bin/python", "-m", "awslambdaric"]
 CMD ["app.lambda_handler.handler"]

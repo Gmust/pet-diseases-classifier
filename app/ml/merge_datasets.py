@@ -5,13 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 
-
 REQUIRED_COLUMNS = {"text", "condition", "record_type"}
 EMPTY_LABEL_VALUES = {"", "none", "null", "nan", "na", "n/a", "unknown", "[]"}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Merge multiple pet-health datasets into one training file.")
+    parser = argparse.ArgumentParser(
+        description="Merge multiple pet-health datasets into one training file."
+    )
     parser.add_argument(
         "--inputs",
         nargs="+",
@@ -157,7 +158,7 @@ def _load_label_map(path: str | None) -> dict[str, str]:
     with path_obj.open("r", encoding="utf-8") as f:
         mapping = json.load(f)
     if not isinstance(mapping, dict):
-        raise ValueError("Label map JSON must be an object: {\"source_label\": \"normalized_label\"}")
+        raise ValueError('Label map JSON must be an object: {"source_label": "normalized_label"}')
     return {str(k): str(v) for k, v in mapping.items()}
 
 

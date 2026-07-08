@@ -1,0 +1,144 @@
+name: Model release
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_version:
+        description: Immutable version declared by both release manifests
+        required: true
+        type: string
+      artifact_run_id:
+        description: Workflow run containing model-bundle-<version>
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: model-release-${{ inputs.model_version }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: 0.11.17
+  MODEL_ARTIFACT: model-bundle-${{ inputs.model_version }}
+
+jobs:
+  validate-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.MODEL_ARTIFACT }}
+          path: models
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: python -m pip install uv==${UV_VERSION}
+      - run: uv sync --frozen --extra dev --extra torch-runtime
+      - name: Verify immutable manifests and requested version
+        env:
+          EXPECTED_VERSION: ${{ inputs.model_version }}
+        run: |
+          uv run --frozen python -m app.ml.model_registry models/transformer_model
+          uv run --frozen python -m app.ml.model_registry models/transformer_model_onnx
+          uv run --frozen python - <<'PY'
+          import os
+          from pathlib import Path
+          from app.ml.model_registry import release_version
+          versions = {
+              release_version(Path("models/transformer_model")),
+              release_version(Path("models/transformer_model_onnx")),
+          }
+          if versions != {os.environ["EXPECTED_VERSION"]}:
+              raise SystemExit(f"Artifact versions {versions} do not match requested version")
+          PY
+      - name: Require model and data transparency cards
+        run: test -s models/transformer_model/MODEL_CARD.md && test -s models/DATA_CARD.md
+      - name: Required real-model regression (no skipped tests)
+        run: |
+          uv run --frozen pytest -q tests/test_classifier_regression.py --junitxml=model-tests.xml
+          uv run --frozen python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("model-tests.xml").getroot()
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in root.iter("testsuite"))
+          if skipped:
+              raise SystemExit(f"Model workflow unexpectedly skipped {skipped} test(s)")
+          PY
+      - name: Deterministic safety gate
+        run: uv run --frozen python -m app.ml.release_gates safety --output-json release-safety.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: safety-evidence-${{ inputs.model_version }}
+          path: release-safety.json
+          retention-days: 90
+
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.MODEL_ARTIFACT }}
+          path: models
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: python -m pip install uv==${UV_VERSION}
+      - run: uv sync --frozen --extra dev --extra torch-runtime --extra onnx-runtime
+      - name: Torch/ONNX release parity
+        run: uv run --frozen python -m app.ml.release_gates parity --output-json release-parity.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parity-evidence-${{ inputs.model_version }}
+          path: release-parity.json
+          retention-days: 90
+
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.MODEL_ARTIFACT }}
+          path: models
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build release images
+        run: |
+          docker build --tag pet-care-ai:${{ inputs.model_version }} .
+          docker build --file Dockerfile.lambda.onnx --tag pet-care-ai-lambda-onnx:${{ inputs.model_version }} .
+      - name: Enforce image budgets
+        run: |
+          python scripts/check_image_size.py pet-care-ai:${{ inputs.model_version }} server_torch
+          python scripts/check_image_size.py pet-care-ai-lambda-onnx:${{ inputs.model_version }} lambda_onnx
+      - name: Scan release images
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.2 image --exit-code 1 --severity CRITICAL pet-care-ai:${{ inputs.model_version }}
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.2 image --exit-code 1 --severity CRITICAL pet-care-ai-lambda-onnx:${{ inputs.model_version }}
+
+  release-evidence:
+    needs: [validate-model, parity, containers]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record immutable promotion evidence
+        env:
+          MODEL_VERSION: ${{ inputs.model_version }}
+          SOURCE_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          mkdir release-evidence
+          printf '{"model_version":"%s","source_run_id":"%s","release_run_id":"%s","commit":"%s"}\n' "$MODEL_VERSION" "$SOURCE_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA" > release-evidence/promotion.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-evidence-${{ inputs.model_version }}
+          path: release-evidence
+          retention-days: 90

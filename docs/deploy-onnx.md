@@ -68,14 +68,19 @@ sam deploy --guided     # first time: set stack name, region, and the params bel
 ```
 
 Parameters worth setting at deploy:
-- `GeminiApiKey` — your key (NoEcho).
-- `ApiKey` — the `X-API-Key` secret (leave empty to disable auth).
-- `FunctionMemory` — defaults to `1024`; bump to `1536` if cold starts OOM.
+- `RuntimeSecretId` — a Secrets Manager secret containing non-empty `API_KEY`
+  and `GEMINI_API_KEY` JSON fields. Production startup rejects missing auth.
+- `FunctionMemory` — defaults to `1769` MB (approximately one full vCPU).
+- `ReservedConcurrency` — defaults to `2` to bound memory/provider traffic.
 - `ApiRateLimit` / `ApiBurstLimit` — gateway throttling (defaults 20 / 40).
 
 The template already points at `Dockerfile.lambda.onnx` and sets
-`MODEL_BACKEND=onnx`, `MODEL_PATH=models/transformer_model_onnx`, `MemorySize=1024`,
-`Timeout=30`.
+`MODEL_BACKEND=onnx`, `MODEL_PATH=models/transformer_model_onnx`,
+`MemorySize=1769`, and `Timeout=60` by default.
+
+Deployments publish a `live` alias using a 10%/5-minute canary. Lambda errors
+automatically roll the deployment back. X-Ray is active, Lambda logs are retained
+for 30 days, and CloudWatch alarms cover errors and sustained throttling.
 
 After deploy, SAM prints the `ApiUrl` output.
 
@@ -104,11 +109,20 @@ sam build && sam deploy
 Or just `git revert` the deploy commit and redeploy. The torch `Dockerfile.lambda`
 and `requirements.txt` are untouched, so the old path still works.
 
+## Cold-start policy
+
+The scheduled keep-warm invocation was removed. A five-run fresh-process
+benchmark of the checked-in local ONNX artifact recorded a 178 ms median and
+219 ms maximum model construction time; see
+`docs/benchmarks/onnx-cold-start-2026-07-07.json`. This does not include Lambda
+image-pull or platform initialization, so production p95 init duration must be
+monitored in CloudWatch. Scheduled invocations do not guarantee reuse of the
+container that receives user traffic. If the measured production cold-start SLO
+is missed, use provisioned concurrency on the `live` alias rather than restoring
+an unreliable keep-warm schedule.
+
 ## Notes
 
-- **Keep-warm:** the template still pings every 5 minutes. With a ~2-4 s cold
-  start you may not need it — widen to `rate(15 minutes)` or disable the
-  `KeepWarm` event to cut idle invocations once you're comfortable.
 - **Image size:** dropping torch is the big win; expect the image to shrink from
   ~2.5 GB to well under 1 GB, which also speeds up `sam build`/push.
 - **Gemini quota:** unrelated to this change, but remember `/chat` general-vs-health

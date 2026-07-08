@@ -79,10 +79,13 @@ req POST /wellness '{
   "previousScore": 82
 }'
 
-hr "12. wellness — partial data only (expect a score, no error)"
+hr "12. wellness — partial baseline data (expect a score, no error)"
+req POST /wellness '{"pet":{"species":"cat","weightKg":4.2}}'
+
+hr "13. wellness — species only (expect HTTP 422 insufficient data)"
 req POST /wellness '{"pet":{"species":"cat"}}'
 
-hr "13. /ask is removed (expect HTTP 404)"
+hr "14. /ask is removed (expect HTTP 404)"
 req POST /ask '{"question":"anything"}'
 
 printf '\n\033[1;32mDone.\033[0m\n'

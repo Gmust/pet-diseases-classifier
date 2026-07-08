@@ -10,6 +10,7 @@ as a safety net when Gemini returns an empty advice list.
 
 Update this file if the training label set changes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,11 +19,27 @@ from app.schemas import DiseaseCategory, SpecialistType, UrgencyLevel
 
 
 @dataclass(frozen=True)
+class AdviceReview:
+    """Veterinary approval record for a condition's static home-advice text.
+
+    `reviewed=False` is the honest default: this advice predates a documented
+    review process (see design.md open question "Who owns veterinary approval
+    for static and generated home advice?"). Set these fields once a named
+    reviewer signs off, rather than defaulting to an unearned True.
+    """
+
+    reviewed: bool = False
+    reviewer: str | None = None
+    reviewed_at: str | None = None  # ISO date, e.g. "2026-01-15"
+
+
+@dataclass(frozen=True)
 class ConditionMetadata:
     urgency: UrgencyLevel
     specialist: SpecialistType
     disease_category: DiseaseCategory
     home_advice: list[str] = field(default_factory=list)
+    review: AdviceReview = field(default_factory=AdviceReview)
 
 
 # ---------------------------------------------------------------------------

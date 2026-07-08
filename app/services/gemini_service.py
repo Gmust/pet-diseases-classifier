@@ -1,8 +1,19 @@
 import logging
-from typing import Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.ml.protocols import GeneratorMetadata
+from app.services.gemini_rotation import RotatingGeminiClient
+from app.services.generation_policy import (
+    MAX_PROMPT_CHARS,
+    GenerationTimeoutError,
+    bound_prompt,
+    call_with_policy,
+    log_fallback,
+)
+
+genai: Any
 try:
     from google import genai
 except ImportError:  # pragma: no cover - runtime guard for missing dependency
@@ -10,9 +21,31 @@ except ImportError:  # pragma: no cover - runtime guard for missing dependency
 
 
 DEFAULT_DISCLAIMER = "This is an AI-assisted pre-assessment and not a veterinary diagnosis."
-GENERAL_DISCLAIMER = "General pet care information — not a substitute for professional veterinary advice."
+GENERAL_DISCLAIMER = (
+    "General pet care information — not a substitute for professional veterinary advice."
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _bounded_chat_transcript(conversation: list[dict[str, str]], max_chars: int) -> str:
+    """Keep newest turns first when fitting a chronological transcript budget."""
+    lines = [
+        f"{message.get('role', 'user').upper()}: {message.get('content', '').strip()}"
+        for message in conversation
+        if message.get("content", "").strip()
+    ]
+    if lines and len(lines[-1]) > max_chars:
+        raise ValueError("Prompt instructions leave insufficient room for the latest chat message.")
+    selected: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        separator = 1 if selected else 0
+        if used + separator + len(line) > max_chars:
+            continue
+        selected.append(line)
+        used += separator + len(line)
+    return "\n".join(reversed(selected))
 
 
 class ExplanationPayload(BaseModel):
@@ -40,7 +73,7 @@ def fallback_explanation(
 
 
 class ChatTurnPayload(BaseModel):
-    mode: str = Field(
+    mode: Literal["general", "health"] = Field(
         default="health",
         description="'general' for a general pet-care question, 'health' for a symptom/health concern.",
     )
@@ -94,16 +127,33 @@ def fallback_chat_turn(
 
 
 class GeminiService:
-    def __init__(self, api_key: Optional[str], model_name: str = "gemini-2.5-flash") -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = "gemini-2.5-flash",
+        api_keys: list[str] | None = None,
+    ) -> None:
+        """`api_keys` (if given) takes priority over the single `api_key` and
+        enables quota rotation: a 429 on one key retries on the next before
+        falling back to the local template."""
         self.model_name = model_name
-        self.client = None
+        self.client: Any = None
+        keys = api_keys or ([api_key] if api_key else [])
 
-        if api_key and genai is not None:
-            self.client = genai.Client(api_key=api_key)
+        if keys and genai is not None:
+            self.client = RotatingGeminiClient(keys)
         elif genai is None:
             logger.warning("google-genai SDK is not available. Falling back to local explanation.")
         else:
             logger.warning("GEMINI_API_KEY is not set. Falling back to local explanation.")
+
+    @property
+    def metadata(self) -> GeneratorMetadata:
+        return GeneratorMetadata(
+            backend="gemini" if self.client is not None else "fallback",
+            model_name=self.model_name,
+            available=self.client is not None,
+        )
 
     def generate_explanation(
         self,
@@ -133,14 +183,16 @@ User symptom text: "{user_text}"
 Predicted condition: "{predicted_condition}"
 """
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={
-                    "temperature": 0.3,
-                    "response_mime_type": "application/json",
-                    "response_json_schema": ExplanationPayload.model_json_schema(),
-                },
+            response = call_with_policy(
+                lambda: self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=bound_prompt(prompt),
+                    config={
+                        "temperature": 0.3,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": ExplanationPayload.model_json_schema(),
+                    },
+                )
             )
 
             if not response.text:
@@ -161,14 +213,20 @@ Predicted condition: "{predicted_condition}"
                     home_advice=default_home_advice,
                 )
             return parsed
+        except GenerationTimeoutError as exc:
+            log_fallback("predict.explanation", "timeout", exc)
+            return fallback_explanation(
+                predicted_condition=predicted_condition,
+                default_home_advice=default_home_advice,
+            )
         except (ValidationError, ValueError) as exc:
-            logger.warning("Gemini response parsing failed: %s", exc)
+            log_fallback("predict.explanation", "invalid_response", exc)
             return fallback_explanation(
                 predicted_condition=predicted_condition,
                 default_home_advice=default_home_advice,
             )
         except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.warning("Gemini request failed: %s", exc)
+            log_fallback("predict.explanation", "request_error", exc)
             return fallback_explanation(
                 predicted_condition=predicted_condition,
                 default_home_advice=default_home_advice,
@@ -209,11 +267,6 @@ Predicted condition: "{predicted_condition}"
                 low_confidence=low_confidence,
             )
 
-        transcript = "\n".join(
-            f"{m.get('role', 'user').upper()}: {m.get('content', '').strip()}"
-            for m in conversation
-            if m.get("content", "").strip()
-        )
         pet_context = f"Pet species: {pet_type}.\n" if pet_type else ""
         confidence_guidance = (
             "The classifier confidence is LOW. Do NOT assert the condition. Instead, ask one or two "
@@ -223,7 +276,8 @@ Predicted condition: "{predicted_condition}"
             "and set needs_clarification to false (unless genuinely ambiguous)."
         )
 
-        prompt = f"""
+        prior_summary_text = bound_prompt((prior_summary or "").strip(), max_chars=1000)
+        prompt_prefix = f"""
 You are a pet-care chat assistant having an ongoing conversation with a pet owner.
 
 FIRST, classify the owner's LATEST message into one of two modes:
@@ -254,20 +308,25 @@ ALWAYS:
 - Return ONLY valid JSON matching the required schema (including the `mode` field).
 
 {pet_context}Predicted condition (only relevant if mode=health): "{predicted_condition}" (confidence {confidence:.2f})
-Prior symptom summary: "{(prior_summary or '').strip()}"
+Prior symptom summary: "{prior_summary_text}"
 
 Conversation so far (oldest first):
-{transcript}
 """
+        transcript = _bounded_chat_transcript(
+            conversation, max_chars=MAX_PROMPT_CHARS - len(prompt_prefix)
+        )
+        prompt = prompt_prefix + transcript
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={
-                    "temperature": 0.4,
-                    "response_mime_type": "application/json",
-                    "response_json_schema": ChatTurnPayload.model_json_schema(),
-                },
+            response = call_with_policy(
+                lambda: self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config={
+                        "temperature": 0.4,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": ChatTurnPayload.model_json_schema(),
+                    },
+                )
             )
             if not response.text:
                 raise ValueError("Gemini returned an empty response body.")
@@ -290,9 +349,18 @@ Conversation so far (oldest first):
                     needs_clarification=parsed.needs_clarification,
                 )
             return parsed
+        except GenerationTimeoutError as exc:
+            log_fallback("chat.turn", "timeout", exc)
+            return fallback_chat_turn(
+                predicted_condition, prior_summary, latest_message, low_confidence
+            )
         except (ValidationError, ValueError) as exc:
-            logger.warning("Gemini chat response parsing failed: %s", exc)
-            return fallback_chat_turn(predicted_condition, prior_summary, latest_message, low_confidence)
+            log_fallback("chat.turn", "invalid_response", exc)
+            return fallback_chat_turn(
+                predicted_condition, prior_summary, latest_message, low_confidence
+            )
         except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.warning("Gemini chat request failed: %s", exc)
-            return fallback_chat_turn(predicted_condition, prior_summary, latest_message, low_confidence)
+            log_fallback("chat.turn", "request_error", exc)
+            return fallback_chat_turn(
+                predicted_condition, prior_summary, latest_message, low_confidence
+            )

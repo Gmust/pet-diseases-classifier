@@ -1,124 +1,88 @@
-import os
 import hmac
+import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
+from app.app_services import AppServices
+from app.config import Settings, get_settings
 from app.ml.predictor import Predictor
-from app.ml.condition_metadata import build_static_explanation, get_condition_metadata
+from app.ml.protocols import Classifier
 from app.observability import RequestLoggingMiddleware, configure_logging, log_event
 from app.schemas import (
-    ChatMode,
-    ChatPrediction,
     ChatRequest,
     ChatResponse,
+    FeedingSummaryRequest,
+    FeedingSummaryResponse,
     PredictRequest,
     PredictResponse,
-    TopKItem,
     WellnessRequest,
     WellnessResponse,
 )
-from app.services.chat_context import build_classifier_input, latest_user_message
-from app.services.gemini_service import DEFAULT_DISCLAIMER, GENERAL_DISCLAIMER, GeminiService
-from app.services.triage_safety import (
-    EMERGENCY_HOME_ADVICE,
-    apply_red_flag_urgency,
-    emergency_explanation,
-    should_abstain,
-)
+from app.services.gemini_service import GeminiService
 from app.services.wellness_service import WellnessService
+from app.use_cases.chat import run_chat
+from app.use_cases.errors import InferenceUnavailableError, InvalidInputError
+from app.use_cases.feeding_summary import run_feeding_summary
+from app.use_cases.predict import run_predict
+from app.use_cases.wellness import run_wellness
 
 load_dotenv()
-configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+configure_logging(get_settings().log_level)
 
+logger = logging.getLogger(__name__)
 
-LOW_CONFIDENCE_NOTE = (
-    "Model confidence is limited for this prediction. Monitor your pet closely and seek veterinary advice."
-)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-def _parse_threshold(raw_value: str | None, default: float = 0.65) -> float:
-    if raw_value is None:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError:
-        return default
-    return min(max(value, 0.0), 1.0)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _build_chat_prediction(top_predictions, meta, urgency, home_advice) -> ChatPrediction:
-    top = top_predictions[0]
-    return ChatPrediction(
-        predicted_condition=top.predicted_condition,
-        confidence=round(top.confidence, 4),
-        top_k=[
-            TopKItem(condition=p.predicted_condition, confidence=round(p.confidence, 4))
-            for p in top_predictions
-        ],
-        urgency=urgency,
-        specialist=meta.specialist,
-        disease_category=meta.disease_category,
-        home_advice=home_advice,
-    )
-
-
 def api_key_auth(api_key: str | None = Security(api_key_header)) -> None:
-    expected_api_key = os.getenv("API_KEY")
+    expected_api_key = get_settings().api_key
     if not expected_api_key:
         return
     if not api_key or not hmac.compare_digest(api_key, expected_api_key):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
-@dataclass
-class AppServices:
-    predictor: Predictor
-    gemini_service: GeminiService
-    wellness_service: WellnessService
-    low_confidence_threshold: float
-    use_static_explanations: bool = False
-
-
-def build_services() -> AppServices:
+def build_services(settings: Settings | None = None) -> AppServices:
     """Load the model + services. Extracted from the lifespan so it can also be
     called at Lambda INIT (and by the keep-warm ping) — that way a warm container
     has the model already loaded, instead of paying the load on the first real request."""
-    model_path = os.getenv("MODEL_PATH", "models/transformer_model")
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
-    low_confidence_threshold = _parse_threshold(os.getenv("LOW_CONFIDENCE_THRESHOLD"), default=0.65)
+    settings = settings or get_settings()
 
     # Backend selection: torch (default) or quantized ONNX (cheaper on Lambda).
-    backend = os.getenv("MODEL_BACKEND", "torch").strip().lower()
-    if backend == "onnx":
+    predictor: Classifier
+    if settings.model_backend == "onnx":
         from app.ml.onnx_predictor import OnnxPredictor
 
-        predictor = OnnxPredictor.from_paths(model_path=model_path)
+        predictor = OnnxPredictor.from_paths(model_path=settings.model_path)
     else:
-        predictor = Predictor.from_paths(model_path=model_path)
+        predictor = Predictor.from_paths(model_path=settings.model_path)
 
-    return AppServices(
+    gemini_api_keys = settings.resolved_gemini_api_keys()
+    services = AppServices(
         predictor=predictor,
-        gemini_service=GeminiService(api_key=gemini_api_key, model_name=gemini_model),
-        wellness_service=WellnessService(api_key=gemini_api_key, model_name=gemini_model),
-        low_confidence_threshold=low_confidence_threshold,
+        gemini_service=GeminiService(api_keys=gemini_api_keys, model_name=settings.gemini_model),
+        wellness_service=WellnessService(
+            api_keys=gemini_api_keys, model_name=settings.gemini_model
+        ),
+        low_confidence_threshold=settings.low_confidence_threshold,
         # When true, /predict serves a cautious templated explanation instead of
         # calling Gemini — zero per-request API cost. See README / cost notes.
-        use_static_explanations=_env_flag("USE_STATIC_EXPLANATIONS", default=False),
+        use_static_explanations=settings.use_static_explanations,
     )
+    metadata = services.predictor.metadata
+    log_event(
+        "model_loaded",
+        backend=metadata.backend,
+        model_version=metadata.model_version,
+        label_count=len(metadata.labels),
+    )
+    return services
 
 
 def ensure_services() -> AppServices:
@@ -129,7 +93,7 @@ def ensure_services() -> AppServices:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ensure_services()  # no-op if already loaded at INIT (Lambda) — loads on first run (uvicorn)
     yield
 
@@ -141,9 +105,45 @@ app = FastAPI(
     lifespan=lifespan,
     # ROOT_PATH tells FastAPI it is mounted behind a proxy at this prefix.
     # Set to "/Prod" on Lambda (API Gateway stage), leave empty for local dev.
-    root_path=os.getenv("ROOT_PATH", ""),
+    root_path=get_settings().root_path,
 )
 app.add_middleware(RequestLoggingMiddleware)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    # Preserve FastAPI's default `{"detail": ...}` shape (existing clients rely on
+    # it) and attach the request id from RequestLoggingMiddleware so a caller can
+    # correlate a public error with the matching server-side log line.
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "requestId": request_id},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Safety net for any exception that escapes a route's own try/except (each
+    # endpoint already converts expected classifier/generator failures to a
+    # stable HTTPException — this only fires for genuinely unexpected errors).
+    # Never expose exc's text to the caller; log it server-side instead.
+    request_id = getattr(request.state, "request_id", None)
+    logger.exception(
+        "Unhandled exception",
+        extra={
+            "fields": {
+                "event": "unhandled_exception",
+                "path": request.url.path,
+                "request_id": request_id,
+            }
+        },
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error.", "requestId": request_id},
+    )
 
 
 @app.get("/health")
@@ -151,72 +151,37 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/health/live")
+def liveness() -> dict[str, str]:
+    """Process is up and able to serve HTTP. Does not check the model."""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness(response: Response) -> dict[str, object]:
+    """Model bundle is loaded and validated. No filesystem paths or secrets exposed."""
+    services = getattr(app.state, "services", None)
+    if services is None:
+        response.status_code = 503
+        return {"status": "not_ready", "reason": "model_not_loaded"}
+    meta = services.predictor.metadata
+    return {
+        "status": "ready",
+        "backend": meta.backend,
+        "modelVersion": meta.model_version,
+        "labelCount": len(meta.labels),
+    }
+
+
 @app.post("/predict", response_model=PredictResponse, dependencies=[Depends(api_key_auth)])
 def predict(payload: PredictRequest) -> PredictResponse:
     services: AppServices = app.state.services
-
     try:
-        prediction = services.predictor.predict(payload.text)
-    except ValueError as exc:
+        return run_predict(payload, services)
+    except InvalidInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
-
-    meta = get_condition_metadata(prediction.predicted_condition)
-    urgency, red_flag = apply_red_flag_urgency(payload.text, meta.urgency)
-
-    if red_flag.triggered:
-        # Emergency: override condition-specific content (the predicted class may be
-        # wrong) and skip Gemini — lead with emergency message + first-aid advice.
-        explanation = emergency_explanation(red_flag.reason)
-        disclaimer = DEFAULT_DISCLAIMER
-        home_advice = list(EMERGENCY_HOME_ADVICE)
-        gemini_used = False
-    elif services.use_static_explanations:
-        # Cost path: skip Gemini and serve a cautious templated explanation.
-        explanation = build_static_explanation(prediction.predicted_condition, meta)
-        disclaimer = DEFAULT_DISCLAIMER
-        home_advice = list(meta.home_advice)
-        gemini_used = False
-    else:
-        explanation_payload = services.gemini_service.generate_explanation(
-            user_text=payload.text,
-            predicted_condition=prediction.predicted_condition,
-            default_home_advice=list(meta.home_advice),
-        )
-        explanation = explanation_payload.explanation
-        disclaimer = explanation_payload.disclaimer or DEFAULT_DISCLAIMER
-        home_advice = explanation_payload.home_advice
-        gemini_used = True
-
-    # Low-confidence note — only when this is NOT an emergency override.
-    if (
-        not red_flag.triggered
-        and prediction.confidence < services.low_confidence_threshold
-        and LOW_CONFIDENCE_NOTE not in explanation
-    ):
-        explanation = f"{explanation} {LOW_CONFIDENCE_NOTE}"
-
-    log_event(
-        "prediction",
-        endpoint="predict",
-        condition=prediction.predicted_condition,
-        confidence=round(prediction.confidence, 4),
-        low_confidence=prediction.confidence < services.low_confidence_threshold,
-        red_flag=red_flag.reason,
-        gemini_used=gemini_used,
-    )
-
-    return PredictResponse(
-        predicted_condition=prediction.predicted_condition,
-        confidence=round(prediction.confidence, 4),
-        explanation=explanation,
-        disclaimer=disclaimer,
-        urgency=urgency,
-        specialist=meta.specialist,
-        disease_category=meta.disease_category,
-        home_advice=home_advice,
-    )
+    except InferenceUnavailableError as exc:
+        raise HTTPException(status_code=500, detail="Prediction failed.") from exc
 
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(api_key_auth)])
@@ -230,87 +195,14 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
     The backend owns all session state: it stores the message history and the rolling
     `symptomSummary` and replays them every turn. This service stores nothing.
-
-    Flow: red-flag check (always) → local classifier → one Gemini call that decides
-    general vs health AND writes the answer. Branch the response on `mode`.
     """
     services: AppServices = app.state.services
-
-    new_message = latest_user_message(payload.messages)
-    if not new_message or not new_message.strip():
-        raise HTTPException(status_code=400, detail="The last message must be a non-empty user message.")
-
-    classifier_input = build_classifier_input(payload.symptom_summary, new_message)
-
     try:
-        top_predictions = services.predictor.predict_top_k(classifier_input, k=3)
-    except ValueError as exc:
+        return run_chat(payload, services)
+    except InvalidInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
-
-    top = top_predictions[0]
-    meta = get_condition_metadata(top.predicted_condition)
-    low_confidence = top.confidence < services.low_confidence_threshold
-    abstain = should_abstain(top.confidence)
-    urgency, red_flag = apply_red_flag_urgency(new_message, meta.urgency)
-
-    # --- Emergency: red-flag always wins, regardless of general/health intent ---
-    if red_flag.triggered:
-        summary_bits = [
-            s for s in [(payload.symptom_summary or "").strip(), new_message.strip()] if s
-        ]
-        log_event("prediction", endpoint="chat", mode="emergency",
-                   condition=top.predicted_condition, confidence=round(top.confidence, 4),
-                   red_flag=red_flag.reason, gemini_used=False)
-        return ChatResponse(
-            mode=ChatMode.EMERGENCY,
-            answer=emergency_explanation(red_flag.reason),
-            symptom_summary=" ".join(summary_bits)[:1000],
-            prediction=_build_chat_prediction(top_predictions, meta, urgency, list(EMERGENCY_HOME_ADVICE)),
-            related_topics=[],
-            needs_clarification=False,
-            disclaimer=DEFAULT_DISCLAIMER,
-        )
-
-    # --- One Gemini call decides general vs health AND writes the answer ---
-    conversation = [{"role": m.role.value, "content": m.content} for m in payload.messages]
-    turn = services.gemini_service.generate_chat_turn(
-        conversation=conversation,
-        predicted_condition=top.predicted_condition,
-        confidence=top.confidence,
-        prior_summary=payload.symptom_summary,
-        low_confidence=low_confidence or abstain,
-        pet_type=payload.pet_type.value if payload.pet_type else None,
-    )
-    gemini_used = services.gemini_service.client is not None
-
-    if turn.mode == "general":
-        # General-care Q&A: no clinical prediction, keep the medical summary untouched.
-        log_event("prediction", endpoint="chat", mode="general", gemini_used=gemini_used)
-        return ChatResponse(
-            mode=ChatMode.GENERAL,
-            answer=turn.answer,
-            symptom_summary=turn.symptom_summary or (payload.symptom_summary or ""),
-            prediction=None,
-            related_topics=turn.related_topics,
-            needs_clarification=False,
-            disclaimer=GENERAL_DISCLAIMER,
-        )
-
-    # Health triage.
-    log_event("prediction", endpoint="chat", mode="health",
-               condition=top.predicted_condition, confidence=round(top.confidence, 4),
-               low_confidence=low_confidence, abstain=abstain, red_flag=None, gemini_used=gemini_used)
-    return ChatResponse(
-        mode=ChatMode.HEALTH,
-        answer=turn.answer,
-        symptom_summary=turn.symptom_summary,
-        prediction=_build_chat_prediction(top_predictions, meta, urgency, list(meta.home_advice)),
-        related_topics=[],
-        needs_clarification=turn.needs_clarification or abstain,
-        disclaimer=DEFAULT_DISCLAIMER,
-    )
+    except InferenceUnavailableError as exc:
+        raise HTTPException(status_code=500, detail="Prediction failed.") from exc
 
 
 @app.post("/wellness", response_model=WellnessResponse, dependencies=[Depends(api_key_auth)])
@@ -324,7 +216,24 @@ def wellness(payload: WellnessRequest) -> WellnessResponse:
     - Missing dimensions are scaled out — partial data is always accepted.
     """
     services: AppServices = app.state.services
-    return services.wellness_service.score(
-        request=payload,
-        predictor=services.predictor,
-    )
+    return run_wellness(payload, services)
+
+
+@app.post(
+    "/feeding-summary",
+    response_model=FeedingSummaryResponse,
+    dependencies=[Depends(api_key_auth)],
+)
+def feeding_summary(payload: FeedingSummaryRequest) -> FeedingSummaryResponse:
+    """
+    Daily per-pet feeding summary, meant to be called once/day (batched across all
+    pets in one request) by a scheduler in the backend, to drive a feeding notification.
+
+    - Fully deterministic (RER/MER calorie-target formula) — no classifier, no Gemini,
+      no per-pet API cost, so it stays cheap at any batch size.
+    - Each pet's logged products are summed and compared against its computed target;
+      `status` is a 5-tier enum (EXTREME_UNDER_TARGET..EXTREME_OVER_TARGET) with no
+      baked-in text — the frontend renders the notification copy per-locale from
+      `status` + `targetCalories`/`actualCalories`/`deviationPct`.
+    """
+    return run_feeding_summary(payload)

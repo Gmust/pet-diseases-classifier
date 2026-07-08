@@ -1,16 +1,17 @@
 """Unit tests for the dataset-prep helpers. Skipped if pandas isn't installed."""
+
 from __future__ import annotations
 
 import pytest
 
 pd = pytest.importorskip("pandas")  # needs the training env (requirements-train.txt)
 
+from app.ml.dataset_schema import normalize_text  # noqa: E402
 from app.ml.prepare_dataset import (  # noqa: E402
     apply_label_map,
     carve_owner_eval,
     dedup,
     downsample,
-    normalize_text,
 )
 
 
@@ -23,11 +24,13 @@ def test_normalize_text_collapses_punctuation_and_space():
 
 
 def test_dedup_removes_near_duplicates():
-    df = _df([
-        ("My dog is vomiting", "Digestive Issues", "Owner Observation"),
-        ("my dog is vomiting!", "Digestive Issues", "Owner Observation"),  # near-dup
-        ("Cat sneezing a lot", "Respiratory Conditions", "Owner Observation"),
-    ])
+    df = _df(
+        [
+            ("My dog is vomiting", "Digestive Issues", "Owner Observation"),
+            ("my dog is vomiting!", "Digestive Issues", "Owner Observation"),  # near-dup
+            ("Cat sneezing a lot", "Respiratory Conditions", "Owner Observation"),
+        ]
+    )
     out = dedup(df)
     assert len(out) == 2
 
@@ -39,12 +42,15 @@ def test_apply_label_map_collapses_raw_labels():
 
 
 def test_downsample_caps_majority_classes():
-    rows = [(f"text big {i}", "Infectious and Parasitic Diseases", "External Dataset") for i in range(50)]
+    rows = [
+        (f"text big {i}", "Infectious and Parasitic Diseases", "External Dataset")
+        for i in range(50)
+    ]
     rows += [(f"text small {i}", "Blood Disorders", "External Dataset") for i in range(5)]
     out = downsample(_df(rows), max_per_class=10)
     counts = out["condition"].value_counts()
     assert counts["Infectious and Parasitic Diseases"] == 10
-    assert counts["Blood Disorders"] == 5            # small class untouched
+    assert counts["Blood Disorders"] == 5  # small class untouched
 
 
 def test_owner_eval_holdout_is_disjoint_from_train():

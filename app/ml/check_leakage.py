@@ -18,6 +18,7 @@ python -m app.ml.check_leakage \
     --data-path data/merged_augmented.parquet \
     --label-map data/label_map.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,7 +57,9 @@ def main() -> None:
     path = Path(args.data_path)
     df = pd.read_parquet(path) if path.suffix in {".parquet", ".pq"} else pd.read_csv(path)
     df = df.dropna(subset=["text", "condition"]).copy()
-    df["condition"] = df["condition"].astype(str).str.strip().replace(_load_label_map(args.label_map))
+    df["condition"] = (
+        df["condition"].astype(str).str.strip().replace(_load_label_map(args.label_map))
+    )
     df["norm"] = df["text"].map(_normalize)
 
     total = len(df)

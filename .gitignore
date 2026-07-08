@@ -21,6 +21,10 @@ dist/
 .eggs/
 
 .agents
+.codex
+.claude
+skills-lock.json
+
 
 # Test and type-check caches
 .pytest_cache/
@@ -33,6 +37,10 @@ htmlcov/
 
 # Tooling and notebooks
 .ipynb_checkpoints/
+
+# graphify tool output
+graphify-out/
+.graphify_detect.json
 
 # AWS SAM build artifacts
 .aws-sam/

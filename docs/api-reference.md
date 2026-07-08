@@ -34,8 +34,8 @@ uses `hmac.compare_digest` (constant-time).
 | `422` | Unprocessable Entity | Schema validation failed (missing field, wrong type, exceeds length caps). |
 | `500` | Internal Server Error | Unexpected inference failure. |
 
-Error body (FastAPI default): `{ "detail": "<message>" }`. For `422`, `detail` is a
-list of field-level validation errors.
+Error bodies include `{ "detail": "<message>", "requestId": "<id>" }`. For
+`422`, `detail` is a list of field-level validation errors.
 
 > **All field names are camelCase** in both requests and responses. The service
 > also accepts the snake_case internal names, but camelCase is the contract.
@@ -50,6 +50,17 @@ Liveness probe (used by the load balancer). No auth.
 ```json
 { "status": "ok" }
 ```
+
+## `GET /health/live`
+
+Process liveness probe. Returns `200` with `{ "status": "ok" }` independently
+of model readiness.
+
+## `GET /health/ready`
+
+Model readiness probe. Returns `200` with non-sensitive `backend`,
+`modelVersion`, and `labelCount` metadata after successful model validation, or
+`503` with `reason=model_not_loaded` before services are ready.
 
 ---
 
@@ -186,7 +197,8 @@ in `dotnet-chat-integration.md`.
 Rule-based wellness score (0–100) across six dimensions, with a generated
 narrative and recommendations. Designed to be called by the backend from
 aggregated DB records — no manual user input required. Missing dimensions are
-scaled out (partial data is always accepted).
+scaled out after at least one score-bearing input is supplied. A species-only
+request returns `422`; absence of observations is not positive wellness evidence.
 
 **Request** (all sub-objects optional except `pet`)
 
@@ -226,6 +238,53 @@ scaled out (partial data is always accepted).
 | `classifierCondition` | string? | Condition detected from `currentSymptoms`, if provided. |
 | `narrative` | string | Generated summary. |
 | `recommendations` | string[] | Actionable suggestions. |
+| `disclaimer` | string | Always present. |
+
+---
+
+## `POST /feeding-summary`
+
+Daily per-pet feeding summary, meant to be called once/day (batched across all
+pets in one request) by a scheduler in the backend, to drive a feeding
+notification. Fully deterministic (RER/MER calorie-target formula) — no
+classifier, no Gemini, no per-pet API cost, so it stays cheap at any batch size.
+
+**Request**
+
+| Field | Type | Notes |
+|---|---|---|
+| `pets[]` | array | Required, 1–1000 entries. |
+| `pets[].petId` | string | Required. |
+| `pets[].species` | string | Default `"dog"`. |
+| `pets[].breed` | string? | Optional. |
+| `pets[].weightKg` | number | Required, `0 < weightKg <= 500`. |
+| `pets[].ageMonths` | int? | Optional. Applies a growth-energy multiplier for juveniles (< 12mo) instead of the adult maintenance factor. |
+| `pets[].products[]` | array | `{ name, calories }` — logged food items for the day. Max 100. |
+
+```json
+{
+  "pets": [
+    {
+      "petId": "pet-123",
+      "species": "dog",
+      "weightKg": 28.5,
+      "ageMonths": 36,
+      "products": [{ "name": "Kibble A", "calories": 450 }]
+    }
+  ]
+}
+```
+
+**Response `200`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `results[]` | array | One entry per input pet. |
+| `results[].petId` | string | Echoes the input `petId`. |
+| `results[].status` | string | `EXTREME_UNDER_TARGET \| UNDER_TARGET \| ON_TARGET \| OVER_TARGET \| EXTREME_OVER_TARGET`. No baked-in text — the frontend renders notification copy per-locale from `status` + the numeric fields below. |
+| `results[].targetCalories` | number | Computed RER/MER daily target. |
+| `results[].actualCalories` | number | Sum of logged `products[].calories`. |
+| `results[].deviationPct` | number | `actualCalories` vs `targetCalories`, as a percentage deviation. |
 | `disclaimer` | string | Always present. |
 
 ---
