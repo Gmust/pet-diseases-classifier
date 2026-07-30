@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "data_intended_use": "Training and evaluation of a pet-owner-language condition-category pre-assessment classifier; not epidemiology or diagnosis.",
+  "sources": [
+    {"name": "repository-local curated records", "license": "repository-controlled; verify upstream rights before release", "revision": "tracked by dataset manifest"},
+    {"name": "configured external adapters", "license": "recorded per source manifest", "revision": "pinned by adapter configuration"}
+  ],
+  "class_coverage": "All labels must have owner-language evaluation support before promotion; enforced by eval coverage and release gates.",
+  "species_register_coverage": "Owner-language dog/cat symptom descriptions; unsupported species and clinical shorthand are not release claims.",
+  "synthetic_proportion": "Recorded by each immutable dataset manifest; synthetic rows require leakage, similarity, provenance, and manual-review gates.",
+  "transformations_exclusions": "Text/labels are normalized centrally, content-deduplicated, schema-validated, and grouped before splitting. Invalid, duplicate, leakage-prone, and diagnosis-leaking rows are rejected with counts.",
+  "known_data_gaps": "No claim of population representativeness, clinical outcome validity, rare-species coverage, or multilingual coverage.",
+  "model_intended_use": "Cautious condition-category pre-assessment used only with deterministic triage, abstention, and advice-safety policy.",
+  "prohibited_use": "diagnosis, prescribing, autonomous treatment, emergency de-escalation, or replacing veterinary care.",
+  "active_backend": "quantized ONNX on Lambda; Torch is the reference backend",
+  "training_config": "configs/train.json",
+  "dataset_evidence": "dataset build manifest plus immutable split manifest",
+  "rollback_version": "Declared in each release-manifest.json; never inferred from latest",
+  "evaluation_evidence": "Release evaluation reports explicit labels, per-class/segment metrics, confusion matrix, coverage, and baseline deltas. Current local baseline is documented in docs/baseline-2026-07-07.md.",
+  "calibration_evidence": "Versioned thresholds and selective-accuracy evidence are required in the promoted bundle.",
+  "safety_evidence": "data/safety_eval.json must pass; Torch/ONNX parity must meet configs/release-gates.json.",
+  "model_limitations": "Confidence is not clinical probability. Performance may degrade on unseen phrasing, species, conditions, languages, or distribution shift. The deterministic safety layer remains authoritative.",
+  "clinical_status": "Not clinically validated; veterinary approval metadata is required for advice content."
+}

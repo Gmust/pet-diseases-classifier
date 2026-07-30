@@ -1,0 +1,52 @@
+# ── Lambda container image (ONNX Runtime variant) ──────────────────────────
+# Serves the int8-quantized ONNX model via ONNX Runtime instead of PyTorch.
+# Result vs Dockerfile.lambda (torch): much smaller image, ~2-4s cold start
+# instead of 15-30s, and runs comfortably at ~1 GB instead of 3 GB.
+#
+# Prerequisite: build the model dir first on a machine with the weights:
+#   pip install "optimum[onnxruntime]"
+#   python -m app.ml.export_onnx \
+#       --model-dir models/transformer_model \
+#       --output-dir models/transformer_model_onnx
+#
+# Platform pinned to linux/amd64 — Lambda x86_64 target.
+# ---------------------------------------------------------------------------
+
+FROM --platform=linux/amd64 python:3.11-slim
+
+WORKDIR /var/task
+
+# gcc is only needed to build awslambdaric's C extension at build time. Install it,
+# build awslambdaric (+ numpy, pinned first so deps don't pull numpy>=2), then purge
+# gcc in the SAME layer so it never lands in the final image (~200 MB saved).
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "numpy==1.26.4" awslambdaric && \
+    apt-get purge -y --auto-remove gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+# Remaining deps are all prebuilt wheels (onnxruntime, tokenizers, fastapi …) — no gcc needed.
+COPY requirements-onnx.txt .
+RUN pip install --no-cache-dir -r requirements-onnx.txt
+
+# Application code
+COPY app/ ./app/
+
+# Quantized ONNX model (produced by app/ml/export_onnx.py)
+COPY models/transformer_model_onnx/ ./models/transformer_model_onnx/
+RUN python -m app.ml.model_registry /var/task/models/transformer_model_onnx
+
+COPY .env.example .env.example
+
+# Lambda supplies a least-privileged runtime user; keep application/model files read-only.
+RUN chown -R root:root /var/task && \
+    find /var/task -type d -exec chmod 0555 {} + && \
+    find /var/task -type f -exec chmod 0444 {} +
+
+ENV MODEL_BACKEND=onnx \
+    MODEL_PATH=models/transformer_model_onnx \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["/usr/local/bin/python", "-m", "awslambdaric"]
+CMD ["app.lambda_handler.handler"]

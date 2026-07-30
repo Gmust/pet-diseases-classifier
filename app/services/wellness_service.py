@@ -19,15 +19,16 @@ Scoring dimensions and max points:
 
 Missing dimensions: raw sum is scaled so missing data does not punish.
 """
+
 from __future__ import annotations
 
 import logging
-import math
-from typing import Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.ml.condition_metadata import get_condition_metadata
+from app.ml.protocols import Classifier, GeneratorMetadata
 from app.schemas import (
     TrendDirection,
     UrgencyLevel,
@@ -37,13 +38,20 @@ from app.schemas import (
     WellnessBreakdownItem,
     WellnessCondition,
     WellnessFeeding,
-    WellnessMedication,
     WellnessPet,
     WellnessPreventiveCare,
     WellnessRequest,
     WellnessResponse,
 )
+from app.services.gemini_rotation import RotatingGeminiClient
+from app.services.generation_policy import (
+    GenerationTimeoutError,
+    bound_prompt,
+    call_with_policy,
+    log_fallback,
+)
 
+genai: Any
 try:
     from google import genai
 except ImportError:  # pragma: no cover
@@ -59,27 +67,27 @@ WELLNESS_DISCLAIMER = (
 # ── Species-specific norms ─────────────────────────────────────────────────
 
 _ACTIVITY_TARGETS: dict[str, dict] = {
-    "dog":        {"steps": 8000, "active_min": 45},
-    "cat":        {"steps": 1500, "active_min": 20},
-    "rabbit":     {"steps": 0,    "active_min": 30},
-    "hamster":    {"steps": 0,    "active_min": 20},
-    "guinea_pig": {"steps": 0,    "active_min": 25},
-    "bird":       {"steps": 0,    "active_min": 15},
-    "fish":       {"steps": 0,    "active_min": 0},
-    "turtle":     {"steps": 0,    "active_min": 10},
+    "dog": {"steps": 8000, "active_min": 45},
+    "cat": {"steps": 1500, "active_min": 20},
+    "rabbit": {"steps": 0, "active_min": 30},
+    "hamster": {"steps": 0, "active_min": 20},
+    "guinea_pig": {"steps": 0, "active_min": 25},
+    "bird": {"steps": 0, "active_min": 15},
+    "fish": {"steps": 0, "active_min": 0},
+    "turtle": {"steps": 0, "active_min": 10},
 }
 _DEFAULT_ACTIVITY = {"steps": 5000, "active_min": 30}
 
 # (min_hours, max_hours) of healthy sleep per day
 _SLEEP_NORMS: dict[str, tuple[float, float]] = {
-    "dog":        (12.0, 14.0),
-    "cat":        (13.0, 16.0),
-    "rabbit":     (8.0,  10.0),
-    "hamster":    (12.0, 14.0),
+    "dog": (12.0, 14.0),
+    "cat": (13.0, 16.0),
+    "rabbit": (8.0, 10.0),
+    "hamster": (12.0, 14.0),
     "guinea_pig": (10.0, 12.0),
-    "bird":       (10.0, 12.0),
-    "fish":       (0.0,  24.0),  # not applicable — full score always
-    "turtle":     (12.0, 16.0),
+    "bird": (10.0, 12.0),
+    "fish": (0.0, 24.0),  # not applicable — full score always
+    "turtle": (12.0, 16.0),
 }
 _DEFAULT_SLEEP = (11.0, 14.0)
 
@@ -98,40 +106,96 @@ _DEFAULT_KCAL_PER_KG = 40.0
 
 # Urgency → base symptom score (out of 25)
 _URGENCY_BASE_SCORE: dict[UrgencyLevel, float] = {
-    UrgencyLevel.EMERGENCY:    2.0,
-    UrgencyLevel.URGENT:       9.0,
+    UrgencyLevel.EMERGENCY: 2.0,
+    UrgencyLevel.URGENT: 9.0,
     UrgencyLevel.CONSULT_SOON: 15.0,
-    UrgencyLevel.MONITOR:      21.0,
+    UrgencyLevel.MONITOR: 21.0,
 }
 
 # Condition severity → maximum possible wellness score
 _CONDITION_CAP_KEYWORDS: list[tuple[list[str], int]] = [
     # (keywords_to_match_in_name, cap)
-    (["cancer", "tumor", "tumour", "lymphoma", "leukemia", "carcinoma",
-      "sarcoma", "heart failure", "congestive"], 65),
-    (["diabetes", "kidney", "renal", "liver", "hepatic", "epilepsy",
-      "cushings", "addisons", "pancreatitis", "inflammatory bowel"], 75),
-    (["arthritis", "allergy", "dermatitis", "thyroid", "asthma",
-      "hip dysplasia", "luxating"], 85),
+    (
+        [
+            "cancer",
+            "tumor",
+            "tumour",
+            "lymphoma",
+            "leukemia",
+            "carcinoma",
+            "sarcoma",
+            "heart failure",
+            "congestive",
+        ],
+        65,
+    ),
+    (
+        [
+            "diabetes",
+            "kidney",
+            "renal",
+            "liver",
+            "hepatic",
+            "epilepsy",
+            "cushings",
+            "addisons",
+            "pancreatitis",
+            "inflammatory bowel",
+        ],
+        75,
+    ),
+    (["arthritis", "allergy", "dermatitis", "thyroid", "asthma", "hip dysplasia", "luxating"], 85),
 ]
 
 _BAND_LABELS: dict[WellnessBand, str] = {
-    WellnessBand.EXCELLENT:  "Excellent",
-    WellnessBand.GOOD:       "Good",
-    WellnessBand.FAIR:       "Fair",
+    WellnessBand.EXCELLENT: "Excellent",
+    WellnessBand.GOOD: "Good",
+    WellnessBand.FAIR: "Fair",
     WellnessBand.CONCERNING: "Concerning",
-    WellnessBand.CRITICAL:   "Critical",
+    WellnessBand.CRITICAL: "Critical",
 }
 
 
 # ── Internal Gemini response model ─────────────────────────────────────────
 
+
 class _WellnessNarrative(BaseModel):
-    narrative: str = Field(..., min_length=1)
+    narrative: str = Field(
+        ...,
+        min_length=1,
+        description="A short, mobile-friendly summary — 1-2 sentences, max ~35 words.",
+    )
     recommendations: list[str] = Field(default_factory=list)
 
 
+# Mobile cards have limited room — keep the narrative to ~2 sentences.
+_NARRATIVE_MAX_SENTENCES = 2
+_NARRATIVE_MAX_CHARS = 240
+
+
+def _shorten_narrative(text: str) -> str:
+    """Hard guard so the narrative stays mobile-friendly regardless of the model.
+
+    Keeps the first couple of sentences and caps total length. Never fails — just
+    trims. Recommendations carry the detail, so trimming the narrative is safe.
+    """
+    text = " ".join(text.split()).strip()
+    # Keep the first N sentence-ending segments.
+    parts, out = text.replace("! ", ". ").replace("? ", ". ").split(". "), []
+    for count, part in enumerate(parts, start=1):
+        out.append(part)
+        if count >= _NARRATIVE_MAX_SENTENCES:
+            break
+    short = ". ".join(p.rstrip(".") for p in out).strip()
+    if short and not short.endswith((".", "!", "?")):
+        short += "."
+    if len(short) > _NARRATIVE_MAX_CHARS:
+        short = short[:_NARRATIVE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return short
+
+
 # ── Helper functions ────────────────────────────────────────────────────────
+
 
 def _norm(species: str) -> str:
     return species.lower().strip()
@@ -145,38 +209,34 @@ def _score_activity(
     activity: WellnessActivity | None,
     species: str,
 ) -> WellnessBreakdownItem:
+    """Score activity. Absent data is EXCLUDED (max_score=0) so it doesn't punish."""
     MAX = 20.0
     if activity is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # excluded from the total
 
     target = _ACTIVITY_TARGETS.get(_norm(species), _DEFAULT_ACTIVITY)
     earned = 0.0
     possible = 0.0
 
-    # Steps sub-score (10 pts) — only if target > 0
-    if target["steps"] > 0:
+    # Steps sub-score (10 pts) — only counts toward `possible` when provided.
+    if target["steps"] > 0 and activity.avg_steps_per_day is not None:
         possible += 10
-        if activity.avg_steps_per_day is not None:
-            ratio = _clamp(activity.avg_steps_per_day / target["steps"])
-            earned += ratio * 10
+        earned += _clamp(activity.avg_steps_per_day / target["steps"]) * 10
 
     # Active minutes sub-score (10 pts)
     if target["active_min"] > 0:
-        possible += 10
         if activity.avg_active_minutes_per_day is not None:
-            ratio = _clamp(activity.avg_active_minutes_per_day / target["active_min"])
-            earned += ratio * 10
+            possible += 10
+            earned += _clamp(activity.avg_active_minutes_per_day / target["active_min"]) * 10
     else:
-        # Species like fish — full points automatically
+        # Species like fish — active minutes not applicable; full points automatically.
         possible += 10
         earned += 10
 
     if possible == 0:
-        return WellnessBreakdownItem(score=MAX, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no usable activity data → excluded
 
-    # Scale earned to MAX
-    scaled = (earned / possible) * MAX
-    return WellnessBreakdownItem(score=round(scaled, 1), max_score=MAX)
+    return WellnessBreakdownItem(score=round((earned / possible) * MAX, 1), max_score=MAX)
 
 
 def _score_sleep(
@@ -185,7 +245,7 @@ def _score_sleep(
 ) -> WellnessBreakdownItem:
     MAX = 15.0
     if activity is None or activity.avg_sleep_hours_per_day is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no sleep data → excluded
 
     lo, hi = _SLEEP_NORMS.get(_norm(species), _DEFAULT_SLEEP)
     hours = activity.avg_sleep_hours_per_day
@@ -213,7 +273,7 @@ def _score_diet(
 ) -> WellnessBreakdownItem:
     MAX = 20.0
     if feeding is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no feeding data → excluded
 
     earned = 0.0
     possible = 0.0
@@ -221,12 +281,11 @@ def _score_diet(
     # Consistency (6 pts): how many of last 7 days had feeding logs
     possible += 6
     if feeding.consistency_days > 0:
-        consistency_ratio = _clamp(feeding.consistency_days / 7)
-        earned += consistency_ratio * 6
+        earned += _clamp(feeding.consistency_days / 7) * 6
 
-    # Meal frequency (6 pts): 2-3 meals/day is ideal for most species
-    possible += 6
+    # Meal frequency (6 pts): only counts when provided
     if feeding.avg_meals_per_day is not None:
+        possible += 6
         mpd = feeding.avg_meals_per_day
         if 1.8 <= mpd <= 3.2:
             earned += 6
@@ -235,12 +294,10 @@ def _score_diet(
         else:
             earned += 2
 
-    # Variety (2 pts): more than one food type
-    possible += 2
-    if len(feeding.food_types) >= 2:
-        earned += 2
-    elif len(feeding.food_types) == 1:
-        earned += 1
+    # Variety (2 pts): only counts when food types are known
+    if feeding.food_types:
+        possible += 2
+        earned += 2 if len(feeding.food_types) >= 2 else 1
 
     # Calorie fit (6 pts): only if weight and calories are known
     if pet.weight_kg and feeding.avg_calories_per_day:
@@ -248,28 +305,23 @@ def _score_diet(
         kcal_per_kg = _KCAL_PER_KG.get(_norm(pet.species), _DEFAULT_KCAL_PER_KG)
         target_kcal = kcal_per_kg * pet.weight_kg
         if target_kcal > 0:
-            ratio = feeding.avg_calories_per_day / target_kcal
-            # ratio=1.0 is perfect; penalise deviation
-            deviation = abs(ratio - 1.0)
+            deviation = abs(feeding.avg_calories_per_day / target_kcal - 1.0)
             if deviation <= 0.10:
                 earned += 6
             elif deviation <= 0.25:
                 earned += 4
             elif deviation <= 0.40:
                 earned += 2
-            else:
-                earned += 0
 
     if possible == 0:
-        return WellnessBreakdownItem(score=MAX, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no usable diet data → excluded
 
-    scaled = (earned / possible) * MAX
-    return WellnessBreakdownItem(score=round(scaled, 1), max_score=MAX)
+    return WellnessBreakdownItem(score=round((earned / possible) * MAX, 1), max_score=MAX)
 
 
 def _score_symptoms(
     symptoms_text: str | None,
-    predictor,
+    predictor: Classifier | None,
 ) -> tuple[WellnessBreakdownItem, str | None]:
     """Returns (breakdown_item, detected_condition_name | None)."""
     MAX = 25.0
@@ -288,7 +340,7 @@ def _score_symptoms(
 
     # High confidence of a mild condition → slight bonus; bad condition → stays low
     if meta.urgency == UrgencyLevel.MONITOR:
-        score = base + prediction.confidence * 4        # up to 25
+        score = base + prediction.confidence * 4  # up to 25
     elif meta.urgency == UrgencyLevel.EMERGENCY:
         score = base + (1 - prediction.confidence) * 3  # stays near 0-5
     else:
@@ -305,7 +357,7 @@ def _score_preventive(
 ) -> WellnessBreakdownItem:
     MAX = 10.0
     if care is None:
-        return WellnessBreakdownItem(score=0, max_score=MAX)
+        return WellnessBreakdownItem(score=0, max_score=0)  # no preventive-care data → excluded
     score = 0.0
     if care.recent_vet_visit:
         score += 5
@@ -315,22 +367,24 @@ def _score_preventive(
 
 
 def _score_baseline(pet: WellnessPet) -> WellnessBreakdownItem:
-    MAX = 10.0
-    score = 0.0
+    """Each provided field contributes to BOTH earned and possible, so absent
+    fields are scaled out rather than scored as zero."""
+    earned = 0.0
+    possible = 0.0
 
-    # Age factor (5 pts): puppies/kittens and adults full points; seniors slight leniency
+    # Age factor (5 pts): adults full points; seniors (>~10y) slight leniency.
     if pet.age_months is not None:
-        if pet.age_months <= 24 or pet.age_months <= 120:  # up to ~10 years
-            score += 5
-        else:
-            score += 4  # senior — still good, just leniency
+        possible += 5
+        earned += 5 if pet.age_months <= 120 else 4
 
-    # Weight provided (5 pts): we give points for tracking, not for exact number
-    # (we don't have breed-specific weight charts here)
+    # Weight provided (5 pts): points for tracking, not for an exact number.
     if pet.weight_kg is not None and pet.weight_kg > 0:
-        score += 5
+        possible += 5
+        earned += 5
 
-    return WellnessBreakdownItem(score=score, max_score=MAX)
+    if possible == 0:
+        return WellnessBreakdownItem(score=0, max_score=0)  # no baseline data → excluded
+    return WellnessBreakdownItem(score=round(earned, 1), max_score=possible)
 
 
 def _condition_cap(conditions: list[WellnessCondition]) -> int | None:
@@ -391,13 +445,23 @@ def _get_trend(current: int, previous: int | None) -> TrendDirection | None:
 _NARRATIVE_SYSTEM = """
 You are a veterinary wellness assistant generating a report for a pet owner.
 Given the pet details and wellness score breakdown, write:
-1. A clear narrative (3-4 sentences) summarising the pet's wellness this week.
-   Mention which dimension is the weakest and why it matters.
-   Use encouraging, non-alarmist language.
+1. A SHORT narrative for a mobile app card: 1-2 sentences, max ~35 words total.
+   Name the weakest SCORED dimension in a few words. Encouraging, non-alarmist. No preamble.
 2. 3-5 specific, actionable recommendations ordered by priority.
    Be concrete — e.g. "Add 10 minutes to morning walks" not just "exercise more".
+   Put the detail HERE, not in the narrative.
+IMPORTANT: dimensions marked "not tracked (no data)" are MISSING data, NOT low scores.
+Never tell the owner to improve a not-tracked dimension. If a not-tracked dimension is
+important, you may gently suggest they START TRACKING it — but prioritise dimensions
+that were actually scored. Base the narrative's "weakest area" only on scored dimensions.
 Return ONLY valid JSON matching the required schema.
 """
+
+
+def _fmt_dimension(label: str, item: WellnessBreakdownItem) -> str:
+    if item.max_score == 0:
+        return f"  {label:<13}not tracked (no data)"
+    return f"  {label:<13}{item.score}/{item.max_score}"
 
 
 def _build_narrative_prompt(
@@ -412,13 +476,13 @@ def _build_narrative_prompt(
         f"Pet: {request.pet.species}, {request.pet.breed or 'unknown breed'}, "
         f"age {request.pet.age_months or '?'} months, weight {request.pet.weight_kg or '?'} kg",
         f"Wellness score: {score}/100 ({band.value})",
-        f"Breakdown:",
-        f"  Activity:      {breakdown.activity.score}/{breakdown.activity.max_score}",
-        f"  Sleep:         {breakdown.sleep.score}/{breakdown.sleep.max_score}",
-        f"  Diet:          {breakdown.diet.score}/{breakdown.diet.max_score}",
-        f"  Symptoms:      {breakdown.symptoms.score}/{breakdown.symptoms.max_score}",
-        f"  Preventive:    {breakdown.preventive_care.score}/{breakdown.preventive_care.max_score}",
-        f"  Baseline:      {breakdown.baseline.score}/{breakdown.baseline.max_score}",
+        "Breakdown (only scored dimensions count toward the score):",
+        _fmt_dimension("Activity:", breakdown.activity),
+        _fmt_dimension("Sleep:", breakdown.sleep),
+        _fmt_dimension("Diet:", breakdown.diet),
+        _fmt_dimension("Symptoms:", breakdown.symptoms),
+        _fmt_dimension("Preventive:", breakdown.preventive_care),
+        _fmt_dimension("Baseline:", breakdown.baseline),
     ]
     if detected_condition:
         lines.append(f"Classifier detected: {detected_condition}")
@@ -436,40 +500,78 @@ def _build_narrative_prompt(
 def _fallback_narrative(band: WellnessBand, score: int) -> tuple[str, list[str]]:
     narratives = {
         WellnessBand.EXCELLENT: "Your pet is in excellent shape based on this week's tracked data. Keep up the great routine!",
-        WellnessBand.GOOD:      "Your pet is doing well overall. There are a few small areas worth improving.",
-        WellnessBand.FAIR:      "Your pet's wellness is fair. Some dimensions need attention — check the breakdown above.",
+        WellnessBand.GOOD: "Your pet is doing well overall. There are a few small areas worth improving.",
+        WellnessBand.FAIR: "Your pet's wellness is fair. Some dimensions need attention — check the breakdown above.",
         WellnessBand.CONCERNING: "Your pet's wellness is concerning this week. Consider reviewing diet, activity, and scheduling a vet check.",
-        WellnessBand.CRITICAL:  "Your pet's tracked data indicates a critical wellness level. Please consult a veterinarian promptly.",
+        WellnessBand.CRITICAL: "Your pet's tracked data indicates a critical wellness level. Please consult a veterinarian promptly.",
     }
     recs = {
-        WellnessBand.EXCELLENT:  ["Maintain the current routine.", "Schedule a routine annual vet check."],
-        WellnessBand.GOOD:       ["Review the dimension with the lowest sub-score.", "Ensure consistent meal timing."],
-        WellnessBand.FAIR:       ["Increase daily active time.", "Log feeding more consistently.", "Book a vet appointment if symptoms persist."],
-        WellnessBand.CONCERNING: ["Schedule a veterinary check-up soon.", "Improve feeding consistency.", "Increase monitored exercise."],
-        WellnessBand.CRITICAL:   ["Contact a veterinarian as soon as possible.", "Monitor symptoms closely.", "Avoid strenuous activity until assessed."],
+        WellnessBand.EXCELLENT: [
+            "Maintain the current routine.",
+            "Schedule a routine annual vet check.",
+        ],
+        WellnessBand.GOOD: [
+            "Review the dimension with the lowest sub-score.",
+            "Ensure consistent meal timing.",
+        ],
+        WellnessBand.FAIR: [
+            "Increase daily active time.",
+            "Log feeding more consistently.",
+            "Book a vet appointment if symptoms persist.",
+        ],
+        WellnessBand.CONCERNING: [
+            "Schedule a veterinary check-up soon.",
+            "Improve feeding consistency.",
+            "Increase monitored exercise.",
+        ],
+        WellnessBand.CRITICAL: [
+            "Contact a veterinarian as soon as possible.",
+            "Monitor symptoms closely.",
+            "Avoid strenuous activity until assessed.",
+        ],
     }
     return narratives[band], recs[band]
 
 
 # ── Main service class ──────────────────────────────────────────────────────
 
+
 class WellnessService:
-    def __init__(self, api_key: Optional[str], model_name: str = "gemini-2.5-flash") -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = "gemini-2.5-flash",
+        api_keys: list[str] | None = None,
+    ) -> None:
+        """`api_keys` (if given) takes priority over the single `api_key` and
+        enables quota rotation: a 429 on one key retries on the next before
+        falling back to the local template."""
         self.model_name = model_name
-        self.client = None
-        if api_key and genai is not None:
-            self.client = genai.Client(api_key=api_key)
+        self.client: Any = None
+        keys = api_keys or ([api_key] if api_key else [])
+        if keys and genai is not None:
+            self.client = RotatingGeminiClient(keys)
         else:
             logger.warning("Gemini not available — /wellness will use fallback narratives.")
 
-    def score(self, request: WellnessRequest, predictor=None) -> WellnessResponse:
+    @property
+    def metadata(self) -> GeneratorMetadata:
+        return GeneratorMetadata(
+            backend="gemini" if self.client is not None else "fallback",
+            model_name=self.model_name,
+            available=self.client is not None,
+        )
+
+    def score(
+        self, request: WellnessRequest, predictor: Classifier | None = None
+    ) -> WellnessResponse:
         # 1. Score each dimension
         activity_item = _score_activity(request.activity, request.pet.species)
-        sleep_item    = _score_sleep(request.activity, request.pet.species)
-        diet_item     = _score_diet(request.feeding, request.pet)
+        sleep_item = _score_sleep(request.activity, request.pet.species)
+        diet_item = _score_diet(request.feeding, request.pet)
         symptoms_item, detected_condition = _score_symptoms(request.current_symptoms, predictor)
         preventive_item = _score_preventive(request.preventive_care)
-        baseline_item   = _score_baseline(request.pet)
+        baseline_item = _score_baseline(request.pet)
 
         breakdown = WellnessBreakdown(
             activity=activity_item,
@@ -526,25 +628,32 @@ class WellnessService:
         if self.client is None:
             return _fallback_narrative(band, score)
 
-        prompt = _build_narrative_prompt(request, breakdown, score, band, condition_cap, detected_condition)
+        prompt = _build_narrative_prompt(
+            request, breakdown, score, band, condition_cap, detected_condition
+        )
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={
-                    "temperature": 0.35,
-                    "system_instruction": _NARRATIVE_SYSTEM,
-                    "response_mime_type": "application/json",
-                    "response_json_schema": _WellnessNarrative.model_json_schema(),
-                },
+            response = call_with_policy(
+                lambda: self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=bound_prompt(prompt),
+                    config={
+                        "temperature": 0.35,
+                        "system_instruction": _NARRATIVE_SYSTEM,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": _WellnessNarrative.model_json_schema(),
+                    },
+                )
             )
             if not response.text:
                 raise ValueError("Empty Gemini response.")
             parsed = _WellnessNarrative.model_validate_json(response.text)
-            return parsed.narrative, parsed.recommendations
+            return _shorten_narrative(parsed.narrative), parsed.recommendations
+        except GenerationTimeoutError as exc:
+            log_fallback("wellness.narrative", "timeout", exc)
+            return _fallback_narrative(band, score)
         except (ValidationError, ValueError) as exc:
-            logger.warning("Wellness narrative parsing failed: %s", exc)
+            log_fallback("wellness.narrative", "invalid_response", exc)
             return _fallback_narrative(band, score)
         except Exception as exc:  # pragma: no cover
-            logger.warning("Wellness Gemini request failed: %s", exc)
+            log_fallback("wellness.narrative", "request_error", exc)
             return _fallback_narrative(band, score)

@@ -32,15 +32,18 @@ With PetEVAL (gated — needs HF_TOKEN):
 ---------------------------------------
 HF_TOKEN=hf_xxxx python -m app.ml.fetch_and_merge
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
+from app.ml.dataset_sources import DatasetSourceError, SourceMode, SourceResult, load_source
 
 # ---------------------------------------------------------------------------
 # Label map helpers
@@ -94,6 +97,7 @@ def _apply_label_map(label: str, label_map: dict[str, str]) -> str | None:
 # Source loaders — each returns a DataFrame with columns: text, condition, record_type
 # ---------------------------------------------------------------------------
 
+
 def _load_local(data_path: str) -> pd.DataFrame:
     path = Path(data_path)
     if not path.exists():
@@ -105,14 +109,19 @@ def _load_local(data_path: str) -> pd.DataFrame:
     return df[["text", "condition", "record_type"]].copy()
 
 
-def _load_vetpetcare(label_map: dict[str, str]) -> pd.DataFrame:
+def _load_vetpetcare(label_map: dict[str, str], revision: str | None = None) -> pd.DataFrame:
     """
     infinite-dataset-hub/VetPetCare — 90 rows.
     Constructs rich text from symptoms + species + breed + age.
+
+    `revision` pins the exact HF dataset snapshot used for this build so it
+    can be recorded in the build manifest — an unpinned load can silently
+    change contents between runs (see "Canonical and traceable dataset
+    builds" in specs/reproducible-ml-lifecycle/spec.md).
     """
     from datasets import load_dataset
 
-    ds = load_dataset("infinite-dataset-hub/VetPetCare", split="train")
+    ds = load_dataset("infinite-dataset-hub/VetPetCare", split="train", revision=revision)
     raw = ds.to_pandas()
 
     rows = []
@@ -149,91 +158,124 @@ def _load_vetpetcare(label_map: dict[str, str]) -> pd.DataFrame:
     return df
 
 
-def _load_petevalopen() -> pd.DataFrame:
+def _load_petevalopen(revision: str | None = None) -> pd.DataFrame:
     """
     SAVSNET/PetEVAL — gated dataset, 17,600 professional EHRs.
     Requires HF_TOKEN env var and accepted dataset conditions at:
     https://huggingface.co/datasets/SAVSNET/PetEVAL
     Returns empty DataFrame if token missing or access denied.
+
+    `revision` pins the exact HF dataset snapshot — see `_load_vetpetcare`.
     """
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     if not hf_token:
-        print("  [skip] PetEVAL: HF_TOKEN not set. To enable, set HF_TOKEN=hf_xxxx")
-        print("         Accept dataset conditions at: https://huggingface.co/datasets/SAVSNET/PetEVAL")
-        return pd.DataFrame()
+        raise RuntimeError(
+            "PetEVAL: HF_TOKEN not set. Set HF_TOKEN=hf_xxxx and accept dataset conditions at "
+            "https://huggingface.co/datasets/SAVSNET/PetEVAL"
+        )
 
-    try:
-        from datasets import load_dataset
+    from datasets import load_dataset
 
-        ds = load_dataset("SAVSNET/PetEVAL", token=hf_token)
-        splits = list(ds.keys())
-        print(f"  PetEVAL splits: {splits}")
+    ds = load_dataset("SAVSNET/PetEVAL", token=hf_token, revision=revision)
+    splits = list(ds.keys())
+    print(f"  PetEVAL splits: {splits}")
 
-        frames = []
-        for split in splits:
-            df_split = ds[split].to_pandas()
-            frames.append(df_split)
-        raw = pd.concat(frames, ignore_index=True)
+    frames = []
+    for split in splits:
+        df_split = ds[split].to_pandas()
+        frames.append(df_split)
+    raw = pd.concat(frames, ignore_index=True)
 
-        print(f"  PetEVAL columns: {list(raw.columns)}")
-        print(f"  PetEVAL total rows: {len(raw)}")
+    print(f"  PetEVAL columns: {list(raw.columns)}")
+    print(f"  PetEVAL total rows: {len(raw)}")
 
-        # Detect text column
-        text_col = None
-        for candidate in ["text", "clinical_notes", "narrative", "consultation_text", "note"]:
-            if candidate in raw.columns:
-                text_col = candidate
-                break
+    # Detect text column
+    text_col = None
+    for candidate in ["text", "clinical_notes", "narrative", "consultation_text", "note"]:
+        if candidate in raw.columns:
+            text_col = candidate
+            break
 
-        # Detect label column (Main Presenting Complaint preferred)
-        label_col = None
-        for candidate in ["main_presenting_complaint", "mpc", "presenting_complaint",
-                          "syndromic_label", "label", "condition", "icd_label"]:
-            if candidate in raw.columns:
-                label_col = candidate
-                break
+    # Detect label column (Main Presenting Complaint preferred)
+    label_col = None
+    for candidate in [
+        "main_presenting_complaint",
+        "mpc",
+        "presenting_complaint",
+        "syndromic_label",
+        "label",
+        "condition",
+        "icd_label",
+    ]:
+        if candidate in raw.columns:
+            label_col = candidate
+            break
 
-        if text_col is None or label_col is None:
-            print(f"  [skip] PetEVAL: couldn't find text/label columns in {list(raw.columns)}")
-            return pd.DataFrame()
+    if text_col is None or label_col is None:
+        raise ValueError(f"PetEVAL: couldn't find text/label columns in {list(raw.columns)}")
 
-        rows = []
-        for _, r in raw.iterrows():
-            label = str(r[label_col]).strip()
-            if label in _PETEVALSKIP_COMPLAINTS or not label:
-                continue
-            text = str(r[text_col]).strip()
-            if len(text) < 10:
-                continue
+    rows = []
+    for _, r in raw.iterrows():
+        label = str(r[label_col]).strip()
+        if label in _PETEVALSKIP_COMPLAINTS or not label:
+            continue
+        text = str(r[text_col]).strip()
+        if len(text) < 10:
+            continue
 
-            # Map PetEVAL labels via label_map.json (Gastrointestinal → Digestive Issues etc.)
-            # If not in map, keep as-is and let train.py's min-samples filter handle it
-            rows.append({"text": text, "condition": label, "record_type": "PetEVAL"})
+        # Map PetEVAL labels via label_map.json (Gastrointestinal → Digestive Issues etc.)
+        # If not in map, keep as-is and let train.py's min-samples filter handle it
+        rows.append({"text": text, "condition": label, "record_type": "PetEVAL"})
 
-        df = pd.DataFrame(rows)
-        print(f"  Loaded {len(df)} usable rows from PetEVAL")
-        return df
-
-    except Exception as exc:
-        print(f"  [skip] PetEVAL failed to load: {exc}")
-        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    print(f"  Loaded {len(df)} usable rows from PetEVAL")
+    return df
 
 
 # ---------------------------------------------------------------------------
 # Main merge logic
 # ---------------------------------------------------------------------------
 
+
 def _load_synthetic(synthetic_path: str) -> pd.DataFrame:
-    """Load pre-generated synthetic data from generate_synthetic.py."""
-    path = Path(synthetic_path)
-    if not path.exists():
-        print(f"  [skip] Synthetic data not found: {path}")
+    """Load ALL synthetic files in the data directory, not just one.
+
+    Picks up the given path PLUS any sibling ``synthetic*.parquet`` / ``synthetic*.csv``
+    (e.g. synthetic_data.parquet AND synthetic_owner.parquet), so newly generated
+    files are merged automatically instead of being silently ignored.
+    """
+    base = Path(synthetic_path)
+    data_dir = base.parent if base.parent != Path("") else Path(".")
+
+    candidates: list[Path] = []
+    if base.exists():
+        candidates.append(base)
+    for pattern in ("synthetic*.parquet", "synthetic*.csv"):
+        candidates.extend(sorted(data_dir.glob(pattern)))
+
+    # De-duplicate paths while preserving order.
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            files.append(candidate)
+
+    if not files:
+        print(f"  [skip] No synthetic files found in {data_dir}/ (synthetic*.parquet|csv)")
         print("         Run first: python -m app.ml.generate_synthetic")
         return pd.DataFrame()
-    suffix = path.suffix.lower()
-    df = pd.read_csv(path) if suffix == ".csv" else pd.read_parquet(path)
-    print(f"  Loaded {len(df)} synthetic rows from {path.name}")
-    return df[["text", "condition", "record_type"]].copy()
+
+    frames = []
+    for path in files:
+        df = pd.read_csv(path) if path.suffix.lower() == ".csv" else pd.read_parquet(path)
+        df = df[["text", "condition", "record_type"]].copy()
+        print(f"  Loaded {len(df)} synthetic rows from {path.name}")
+        frames.append(df)
+
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["text", "condition"])
+    print(f"  Total synthetic rows (deduped): {len(merged)}")
+    return merged
 
 
 def fetch_and_merge(
@@ -245,54 +287,93 @@ def fetch_and_merge(
     skip_synthetic: bool = False,
     skip_petevalopen: bool = False,
     min_text_length: int = 15,
+    vetpetcare_revision: str | None = None,
+    peteval_revision: str | None = None,
+    require_sources: frozenset[str] = frozenset(),
 ) -> None:
+    """`require_sources` names sources (from {"local", "vetpetcare", "synthetic",
+    "peteval"}) that MUST load successfully — a STRICT source that fails aborts
+    the build (`DatasetSourceError`) instead of being silently skipped. Every
+    source's outcome (rows loaded, pinned revision, failure reason) is recorded
+    in a build manifest written alongside the output parquet."""
     label_map = _load_label_map(label_map_path)
     frames: list[pd.DataFrame] = []
+    source_results: list[SourceResult] = []
+
+    def mode_for(name: str) -> SourceMode:
+        return SourceMode.STRICT if name in require_sources else SourceMode.BEST_EFFORT
 
     # 1. Existing local dataset
     print("\n[1/4] Loading local dataset...")
-    local_df = _load_local(local_path)
-    if not local_df.empty:
-        local_df["condition"] = local_df["condition"].map(
+
+    def _local_loader() -> pd.DataFrame:
+        df = _load_local(local_path)
+        if df.empty:
+            return df
+        df["condition"] = df["condition"].map(
             lambda c: label_map.get(str(c).strip(), str(c).strip())
         )
+        return df
+
+    local_df, local_result = load_source("local", mode_for("local"), _local_loader)
+    source_results.append(local_result)
+    if local_result.loaded:
         frames.append(local_df)
+    elif local_result.error:
+        print(f"  [skip] local dataset failed: {local_result.error}")
 
     # 2. VetPetCare (free, no account needed)
     if not skip_vetpetcare:
         print("\n[2/4] Fetching VetPetCare (free)...")
-        try:
-            vetpetcare_df = _load_vetpetcare(label_map)
-            if not vetpetcare_df.empty:
-                frames.append(vetpetcare_df)
-        except ImportError:
-            print("  [skip] VetPetCare: install 'datasets' package first")
-        except Exception as exc:
-            print(f"  [skip] VetPetCare failed: {exc}")
+        vetpetcare_df, vetpetcare_result = load_source(
+            "vetpetcare",
+            mode_for("vetpetcare"),
+            lambda: _load_vetpetcare(label_map, revision=vetpetcare_revision),
+            revision=vetpetcare_revision,
+        )
+        source_results.append(vetpetcare_result)
+        if vetpetcare_result.loaded:
+            frames.append(vetpetcare_df)
+        elif vetpetcare_result.error:
+            print(f"  [skip] VetPetCare failed: {vetpetcare_result.error}")
     else:
         print("\n[2/4] VetPetCare: skipped (--skip-vetpetcare)")
 
     # 3. Synthetic data from Gemini (free — uses your existing API key)
     if not skip_synthetic:
         print("\n[3/4] Loading synthetic data (Gemini-generated)...")
-        synthetic_df = _load_synthetic(synthetic_path)
-        if not synthetic_df.empty:
+        synthetic_df, synthetic_result = load_source(
+            "synthetic", mode_for("synthetic"), lambda: _load_synthetic(synthetic_path)
+        )
+        source_results.append(synthetic_result)
+        if synthetic_result.loaded:
             frames.append(synthetic_df)
+        elif synthetic_result.error:
+            print(f"  [skip] synthetic data failed: {synthetic_result.error}")
     else:
         print("\n[3/4] Synthetic data: skipped (--skip-synthetic)")
 
     # 4. PetEVAL (gated — optional)
     if not skip_petevalopen:
         print("\n[4/4] Fetching PetEVAL (gated — needs HF_TOKEN)...")
-        try:
-            petevalopen_df = _load_petevalopen()
-            if not petevalopen_df.empty:
-                petevalopen_df["condition"] = petevalopen_df["condition"].map(
-                    lambda c: label_map.get(str(c).strip(), str(c).strip())
-                )
-                frames.append(petevalopen_df)
-        except ImportError:
-            print("  [skip] PetEVAL: install 'datasets' package first")
+
+        def _peteval_loader() -> pd.DataFrame:
+            df = _load_petevalopen(revision=peteval_revision)
+            if df.empty:
+                return df
+            df["condition"] = df["condition"].map(
+                lambda c: label_map.get(str(c).strip(), str(c).strip())
+            )
+            return df
+
+        petevalopen_df, peteval_result = load_source(
+            "peteval", mode_for("peteval"), _peteval_loader, revision=peteval_revision
+        )
+        source_results.append(peteval_result)
+        if peteval_result.loaded:
+            frames.append(petevalopen_df)
+        elif peteval_result.error:
+            print(f"  [skip] PetEVAL failed: {peteval_result.error}")
     else:
         print("\n[4/4] PetEVAL: skipped (--skip-petevalopen)")
 
@@ -318,7 +399,7 @@ def fetch_and_merge(
     print(f"Final merged dataset: {len(merged)} rows, {merged['condition'].nunique()} classes")
     print("\nClass distribution:")
     print(merged["condition"].value_counts().to_string())
-    print(f"\nSource breakdown:")
+    print("\nSource breakdown:")
     print(merged["record_type"].value_counts().to_string())
 
     # Save
@@ -327,44 +408,96 @@ def fetch_and_merge(
     merged.to_parquet(output, index=False)
     print(f"\nSaved to: {output}")
 
+    # Build manifest: what sources actually contributed to this build, at what
+    # pinned revision — the traceability record required by
+    # "Canonical and traceable dataset builds" (specs/reproducible-ml-lifecycle).
+    manifest = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "output": str(output),
+        "output_rows": len(merged),
+        "min_text_length": min_text_length,
+        "label_map_path": label_map_path,
+        "sources": [r.as_dict() for r in source_results],
+    }
+    manifest_path = output.with_name(output.name + ".manifest.json")
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"Wrote build manifest to: {manifest_path}")
+
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fetch external vet datasets and merge into augmented training file.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--local-path", default="data/merged_pet_dataset.parquet",
-                        help="Existing local dataset to include.")
-    parser.add_argument("--synthetic-path", default="data/synthetic_data.parquet",
-                        help="Synthetic data file from generate_synthetic.py.")
-    parser.add_argument("--label-map", default="data/label_map.json",
-                        help="Label consolidation map JSON.")
-    parser.add_argument("--output", default="data/merged_augmented.parquet",
-                        help="Output path for the augmented dataset.")
-    parser.add_argument("--skip-vetpetcare", action="store_true",
-                        help="Skip fetching VetPetCare.")
-    parser.add_argument("--skip-synthetic", action="store_true",
-                        help="Skip loading synthetic data.")
-    parser.add_argument("--skip-petevalopen", action="store_true",
-                        help="Skip fetching PetEVAL (gated).")
-    parser.add_argument("--min-text-length", type=int, default=15,
-                        help="Drop rows with text shorter than this.")
+    parser.add_argument(
+        "--local-path",
+        default="data/merged_pet_dataset.parquet",
+        help="Existing local dataset to include.",
+    )
+    parser.add_argument(
+        "--synthetic-path",
+        default="data/synthetic_data.parquet",
+        help="Synthetic data file from generate_synthetic.py.",
+    )
+    parser.add_argument(
+        "--label-map", default="data/label_map.json", help="Label consolidation map JSON."
+    )
+    parser.add_argument(
+        "--output",
+        default="data/merged_augmented.parquet",
+        help="Output path for the augmented dataset.",
+    )
+    parser.add_argument("--skip-vetpetcare", action="store_true", help="Skip fetching VetPetCare.")
+    parser.add_argument(
+        "--skip-synthetic", action="store_true", help="Skip loading synthetic data."
+    )
+    parser.add_argument(
+        "--skip-petevalopen", action="store_true", help="Skip fetching PetEVAL (gated)."
+    )
+    parser.add_argument(
+        "--min-text-length", type=int, default=15, help="Drop rows with text shorter than this."
+    )
+    parser.add_argument(
+        "--vetpetcare-revision",
+        default=None,
+        help="Pin the VetPetCare HF dataset revision (commit/tag) for traceability.",
+    )
+    parser.add_argument(
+        "--peteval-revision",
+        default=None,
+        help="Pin the PetEVAL HF dataset revision (commit/tag) for traceability.",
+    )
+    parser.add_argument(
+        "--require-source",
+        action="append",
+        default=[],
+        choices=["local", "vetpetcare", "synthetic", "peteval"],
+        help="Source that MUST load successfully — repeat to require several. "
+        "A failure aborts the build instead of being skipped.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    fetch_and_merge(
-        local_path=args.local_path,
-        synthetic_path=args.synthetic_path,
-        label_map_path=args.label_map,
-        output_path=args.output,
-        skip_vetpetcare=args.skip_vetpetcare,
-        skip_synthetic=args.skip_synthetic,
-        skip_petevalopen=args.skip_petevalopen,
-        min_text_length=args.min_text_length,
-    )
+    try:
+        fetch_and_merge(
+            local_path=args.local_path,
+            synthetic_path=args.synthetic_path,
+            label_map_path=args.label_map,
+            output_path=args.output,
+            skip_vetpetcare=args.skip_vetpetcare,
+            skip_synthetic=args.skip_synthetic,
+            skip_petevalopen=args.skip_petevalopen,
+            min_text_length=args.min_text_length,
+            vetpetcare_revision=args.vetpetcare_revision,
+            peteval_revision=args.peteval_revision,
+            require_sources=frozenset(args.require_source),
+        )
+    except DatasetSourceError as exc:
+        raise SystemExit(f"Build aborted: {exc}") from exc

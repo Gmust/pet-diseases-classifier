@@ -1,5 +1,12 @@
 # Pet Care AI Microservice
 
+Architecture and accepted design decisions are documented in
+[`docs/architecture.md`](docs/architecture.md) and [`docs/adr/`](docs/adr/).
+Contributor, security, privacy, and operational procedures are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md),
+[`docs/privacy-data-handling.md`](docs/privacy-data-handling.md), and
+[`docs/runbooks/`](docs/runbooks/).
+
 FastAPI microservice providing three AI-powered endpoints for pet health assessment, general pet-care Q&A, and wellness scoring. Deployed on AWS Lambda via AWS SAM.
 
 ---
@@ -9,10 +16,11 @@ FastAPI microservice providing three AI-powered endpoints for pet health assessm
 ```
 Client
   │
-  ├─ POST /predict   → Bio_ClinicalBERT classifier (fine-tuned, local)
+  ├─ POST /predict   → local transformer classifier (current bundle: DistilBERT)
   │                    + Gemini explanation + home advice
   │
-  ├─ POST /ask       → Gemini (general pet-care Q&A, guardrailed)
+  ├─ POST /chat      → emergency rules + local classifier
+  │                    + Gemini general/health routing and answer
   │
   └─ POST /wellness  → Rule-based scoring across 6 dimensions
                        + Gemini narrative + recommendations
@@ -22,7 +30,8 @@ Client
 - The **classifier** is the sole decision-maker for condition prediction — Gemini cannot override it.
 - **Gemini** generates human-friendly text only (explanations, advice, narratives).
 - Every response includes a medical/wellness disclaimer.
-- Missing data never blocks a response — dimensions are scaled proportionally.
+- Missing dimensions are scaled proportionally after at least one score-bearing
+  wellness dimension is supplied; species alone is rejected as insufficient data.
 
 ---
 
@@ -34,14 +43,18 @@ app/
   schemas.py                     # All Pydantic request/response models + enums
   lambda_handler.py              # AWS Lambda entry point (Mangum wrapper)
   ml/
-    train.py                     # Fine-tune Bio_ClinicalBERT / PetBERT
+    train.py                     # Fine-tune a configured Hugging Face classifier
     predictor.py                 # Load model + run inference
+    onnx_predictor.py            # Quantized ONNX inference backend
     condition_metadata.py        # Condition → urgency / specialist / category / advice
     fetch_and_merge.py           # Fetch external HF datasets + merge
     generate_synthetic.py        # Generate synthetic training data via Gemini
+    prepare_dataset.py           # Deduplicate, rebalance, and build owner holdout
+    evaluate.py                  # Evaluate Torch or ONNX model on a holdout
   services/
     gemini_service.py            # Explanation + home advice generation
-    ask_service.py               # General Q&A with species + topic guardrails
+    chat_context.py              # Bounded classifier and emergency context
+    triage_safety.py             # Deterministic emergency and abstention rules
     wellness_service.py          # Wellness scoring engine + Gemini narrative
 data/
   merged_pet_dataset.parquet     # Base training data
@@ -63,6 +76,20 @@ requirements-train.txt           # Training-only dependencies (scikit-learn, dat
 
 ### Setup
 
+Recommended reproducible setup with uv:
+
+```bash
+uv sync --extra dev --extra torch-runtime  # local API development + full local tests
+uv sync --extra onnx-runtime               # ONNX-only runtime
+uv sync --extra train                       # training pipeline
+uv sync --extra export                      # ONNX export tooling
+```
+
+`uv.lock` pins all profiles. Use `uv lock --upgrade` only in a dedicated
+dependency-update change and run the relevant test/model workflow afterward.
+
+Legacy pip setup remains available while Dockerfiles migrate to lock exports:
+
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -79,7 +106,9 @@ GEMINI_API_KEY=your_gemini_api_key_here   # from aistudio.google.com/apikey
 GEMINI_MODEL=gemini-2.5-flash-lite         # free: 20 req/day | paid: gemini-2.5-flash
 API_KEY=your_secret_api_key_here           # X-API-Key header auth (leave empty to disable)
 MODEL_PATH=models/transformer_model        # path to fine-tuned model directory
+MODEL_BACKEND=torch                        # torch or onnx
 LOW_CONFIDENCE_THRESHOLD=0.65              # below this, appends low-confidence warning
+USE_STATIC_EXPLANATIONS=false              # skip Gemini for /predict when true
 ```
 
 ### Run
@@ -89,6 +118,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Swagger UI: http://localhost:8000/docs
+
+### Quality commands
+
+Install the development profile, then use the same entry points as CI:
+
+```bash
+make format       # apply Black and isort
+make lint         # Ruff + formatting checks
+make typecheck    # mypy
+make contracts    # OpenAPI fingerprint + SAM template validation
+make test         # full locally available test suite
+make quality      # lint + typecheck + contracts + tests
+make pre-commit   # run all pre-commit hooks against the repository
+```
 
 ---
 
@@ -159,32 +202,13 @@ Classifies pet symptoms into one of 16 conditions using the fine-tuned transform
 
 ---
 
-### `POST /ask`
+### `POST /chat`
 
-General pet-care Q&A: breeds, diet, grooming, training, behaviour, housing.
-
-**Supported species:** `dog` | `cat` | `rabbit` | `hamster` | `guinea_pig` | `bird` | `fish` | `turtle`
-
-Medical/symptom questions are automatically redirected to `/predict`. Unsupported species receive a "not covered" response without consuming Gemini quota.
-
-**Request:**
-```json
-{
-  "question": "How often should I brush a Persian cat?",
-  "petType": "cat"
-}
-```
-
-`petType` is optional — if omitted, Gemini infers the species from the question.
-
-**Response:**
-```json
-{
-  "answer": "Persian cats have long, dense coats that mat easily. Daily brushing with a wide-tooth comb is recommended...",
-  "relatedTopics": ["grooming", "persian", "long-hair breeds"],
-  "disclaimer": "General pet care information — not a substitute for professional veterinary advice."
-}
-```
+Unified stateless conversation endpoint for general pet-care questions and health
+triage. The response `mode` is `general`, `health`, or `emergency`; callers persist
+and replay `symptomSummary` between turns. The final message must be a non-empty
+user message. See [the API reference](docs/api-reference.md#post-chat) and
+[the .NET integration guide](docs/dotnet-chat-integration.md) for the complete contract.
 
 ---
 
@@ -203,7 +227,9 @@ Wellness indicator (0–100) derived from tracked activity, feeding, and care da
 | Preventive care | 10 | `PetEvents` — vet visit + vaccinations |
 | Baseline | 10 | Pet age + weight tracking |
 
-Missing dimensions are scaled out — partial data is always accepted.
+Missing dimensions are scaled out. At least one score-bearing input is required
+(activity, feeding, age/weight, preventive care, active condition, or current
+symptoms); a species-only request returns HTTP 422.
 
 Active chronic conditions cap the maximum possible score:
 - Serious conditions (cancer, heart failure): max 65
@@ -408,6 +434,8 @@ sam delete --stack-name pet-care-ai
 ## Improving Accuracy
 
 1. **More data for rare classes** — Blood Disorders (33 rows), Immune (114), Genitourinary (91) are the bottleneck. PetEVAL adds 17,600 rows.
-2. **Use PetBERT** — switching `--base-model SAVSNET/PetBERT` from Bio_ClinicalBERT typically gives +3–5% F1 on vet text.
+2. **Compare domain-specific base models** — evaluate PetBERT or Bio_ClinicalBERT
+   against the current DistilBERT bundle on the locked owner-language holdout;
+   promote only measured improvements.
 3. **More epochs** — if val F1 is still rising at the end, increase `--epochs`.
 4. **Increase `--patience`** — set to 3 or 4 to let the model recover from temporary plateaus.

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "breathing-1", "text": "my dog is not breathing", "expected_triggered": true, "expected_reason": "not breathing / difficulty breathing"},
+    {"id": "breathing-2", "text": "she is struggling to breathe", "expected_triggered": true, "expected_reason": "not breathing / difficulty breathing"},
+    {"id": "collapse-1", "text": "he collapsed and won't wake up", "expected_triggered": true, "expected_reason": "collapse / unresponsive"},
+    {"id": "seizure-1", "text": "she is having a seizure right now", "expected_triggered": true, "expected_reason": "active seizure / convulsions"},
+    {"id": "bloat-1", "text": "his belly is hard and swollen", "expected_triggered": true, "expected_reason": "suspected bloat / GDV"},
+    {"id": "urination-1", "text": "my cat can't pee and keeps straining", "expected_triggered": true, "expected_reason": "unable to urinate (blocked)"},
+    {"id": "toxin-1", "text": "my dog ate chocolate", "expected_triggered": true, "expected_reason": "toxin / poison ingestion"},
+    {"id": "bleeding-1", "text": "the bleeding is severe and won't stop", "expected_triggered": true, "expected_reason": "severe / uncontrolled bleeding"},
+    {"id": "gums-1", "text": "his gums have turned blue", "expected_triggered": true, "expected_reason": "pale / blue gums"},
+    {"id": "heatstroke-1", "text": "I think my dog has heatstroke", "expected_triggered": true, "expected_reason": "heatstroke"},
+    {"id": "trauma-1", "text": "my cat was hit by a car", "expected_triggered": true, "expected_reason": "trauma / hit by car"},
+    {"id": "dystocia-1", "text": "she has been in labour and straining for hours", "expected_triggered": true, "expected_reason": "pregnancy emergency (dystocia)"},
+    {"id": "negative-itch", "text": "my dog is a little itchy", "expected_triggered": false},
+    {"id": "negative-sneeze", "text": "she sneezed twice today", "expected_triggered": false},
+    {"id": "negative-seizure", "text": "she has not had a seizure", "expected_triggered": false},
+    {"id": "negative-collapse", "text": "he did not collapse", "expected_triggered": false},
+    {"id": "negative-gums", "text": "his gums are not pale", "expected_triggered": false},
+    {"id": "negative-bloat", "text": "her stomach is not bloated", "expected_triggered": false},
+    {"id": "negative-breathing", "text": "she is breathing normally", "expected_triggered": false},
+    {"id": "negative-urination", "text": "he can pee normally", "expected_triggered": false},
+    {"id": "negative-food", "text": "my dog ate dinner normally", "expected_triggered": false},
+    {"id": "negative-rest", "text": "my old cat sleeps a lot but wakes normally", "expected_triggered": false}
+  ]
+}

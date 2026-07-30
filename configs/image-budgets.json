@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "server_torch": {
+    "max_bytes": 1800000000,
+    "reason": "CPU Torch runtime plus the immutable transformer bundle"
+  },
+  "lambda_torch": {
+    "max_bytes": 1800000000,
+    "reason": "CPU Torch, Lambda runtime interface, and transformer bundle"
+  },
+  "lambda_onnx": {
+    "max_bytes": 600000000,
+    "reason": "ONNX Runtime, tokenizers, and quantized transformer bundle"
+  }
+}

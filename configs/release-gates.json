@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "safety": {
+    "min_recall": 1.0,
+    "max_false_positive_rate": 0.05
+  },
+  "parity": {
+    "min_label_agreement": 0.99,
+    "max_accuracy_delta": 0.01,
+    "max_mean_confidence_delta": 0.03
+  }
+}
