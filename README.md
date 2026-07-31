@@ -30,8 +30,8 @@ Client
 - The **classifier** is the sole decision-maker for condition prediction — Gemini cannot override it.
 - **Gemini** generates human-friendly text only (explanations, advice, narratives).
 - Every response includes a medical/wellness disclaimer.
-- Missing dimensions are scaled proportionally after at least one score-bearing
-  wellness dimension is supplied; species alone is rejected as insufficient data.
+- Missing data is reported explicitly through weighted coverage and assessment status;
+  partial scores remain proportional only after the minimum reliability gate is met.
 
 ---
 
@@ -224,12 +224,43 @@ Wellness indicator (0–100) derived from tracked activity, feeding, and care da
 | Sleep | 15 | `ActivityDailies` — sleep hours vs species norms |
 | Diet | 20 | `FeedingLogs` — meal consistency, food variety, calorie fit |
 | Symptoms | 25 | Optional free text → transformer classifier |
-| Preventive care | 10 | `PetEvents` — vet visit + vaccinations |
-| Baseline | 10 | Pet age + weight tracking |
+| Preventive care | 10 | `PetEvents` + reminder runs — vet visit, vaccinations, medication adherence |
+| Baseline | 10 | Pet age + weight-history stability |
 
-Missing dimensions are scaled out. At least one score-bearing input is required
-(activity, feeding, age/weight, preventive care, active condition, or current
-symptoms); a species-only request returns HTTP 422.
+Missing dimensions are scaled out — partial data is always accepted. The response
+uses `scoreStatus` to distinguish `COMPLETE`, `PARTIAL`, and `INSUFFICIENT_DATA`.
+`dataCoverage` is the sum of maxima for `AVAILABLE` dimensions divided by the sum
+of maxima for all `AVAILABLE` or `MISSING` dimensions, rounded to four decimal
+places. `NOT_APPLICABLE` dimensions are excluded from both sides.
+
+Each breakdown item includes:
+
+- `availability`: `AVAILABLE`, `MISSING`, or `NOT_APPLICABLE`.
+- `included`: compatibility field; true exactly when availability is `AVAILABLE`.
+- `reasonCodes`: stable uppercase machine-readable explanations.
+- `evidence`: only allowlisted scalar values used by the deterministic rule.
+
+Evidence never includes raw symptom text, medication names, or free-form behavioral
+notes. No symptom text means the symptom dimension is `NOT_APPLICABLE`; users are
+not asked to invent symptoms to complete the score.
+
+A numeric score is returned only when all of these reliability conditions are met:
+
+- `dataCoverage >= 0.60`.
+- At least three foundational dimensions are `AVAILABLE` among Activity, Sleep,
+  Diet, Preventive care, and Baseline.
+- Diet and PreventiveCare-or-Baseline are available.
+- Activity-or-Sleep is available when either applies to the species. Species for
+  which both are `NOT_APPLICABLE` are not blocked by that group.
+
+If the gate is not met, the request still succeeds but returns
+`INSUFFICIENT_DATA` and null score/band fields. Symptoms remain optional.
+
+Medication adherence is calculated as completed doses divided by scheduled doses
+and contributes 20% of the preventive-care dimension when dose totals are supplied.
+Weight stability compares the oldest and newest `weightHistory` measurements:
+changes up to 3% receive full credit, up to 5% receive 80%, up to 10% receive 40%,
+and larger changes receive no stability credit.
 
 Active chronic conditions cap the maximum possible score:
 - Serious conditions (cancer, heart failure): max 65
@@ -271,11 +302,24 @@ Active chronic conditions cap the maximum possible score:
     { "name": "hip dysplasia", "typeLabel": "musculoskeletal" }
   ],
   "activeMedications": [
-    { "name": "Carprofen", "frequency": "daily" }
+    {
+      "name": "Carprofen",
+      "frequency": "daily",
+      "scheduledDoses": 14,
+      "completedDoses": 10
+    }
+  ],
+  "weightHistory": [
+    { "weightKg": 28.7, "measuredAt": "2026-06-30T08:00:00Z" },
+    { "weightKg": 28.5, "measuredAt": "2026-07-30T08:00:00Z" }
   ],
   "preventiveCare": {
     "recentVetVisit": true,
     "vaccinationsUpToDate": true
+  },
+  "evaluationWindow": {
+    "startDate": "2026-07-24",
+    "endDate": "2026-07-30"
   },
   "currentSymptoms": "slightly lethargic lately",
   "previousScore": 80
@@ -288,26 +332,265 @@ Active chronic conditions cap the maximum possible score:
   "wellnessScore": 85,
   "band": "GOOD",
   "bandLabel": "Good",
+  "scoreStatus": "COMPLETE",
+  "dataCoverage": 1.0,
+  "calculationVersion": "2.0.0",
+  "evaluatedAt": "2026-07-31T08:45:12.123456Z",
+  "evaluationWindow": {
+    "startDate": "2026-07-24",
+    "endDate": "2026-07-30"
+  },
   "trend": "STABLE",
   "breakdown": {
-    "activity":      { "score": 20.0, "maxScore": 20.0 },
-    "sleep":         { "score": 15.0, "maxScore": 15.0 },
-    "diet":          { "score": 20.0, "maxScore": 20.0 },
-    "symptoms":      { "score": 15.1, "maxScore": 25.0 },
-    "preventiveCare":{ "score": 10.0, "maxScore": 10.0 },
-    "baseline":      { "score": 10.0, "maxScore": 10.0 }
+    "activity": {
+      "score": 20.0,
+      "maxScore": 20.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["ACTIVITY_TARGET_MET"],
+      "evidence": {
+        "avgStepsPerDay": 8500.0,
+        "stepTarget": 8000,
+        "avgActiveMinutesPerDay": 45.0,
+        "activeMinuteTarget": 45
+      }
+    },
+    "sleep": {
+      "score": 15.0,
+      "maxScore": 15.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["SLEEP_WITHIN_RANGE"],
+      "evidence": {
+        "avgSleepHoursPerDay": 13.0,
+        "healthyMinimumHours": 12.0,
+        "healthyMaximumHours": 14.0
+      }
+    },
+    "diet": {
+      "score": 20.0,
+      "maxScore": 20.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["DIET_TRACKING_STRONG"],
+      "evidence": {
+        "consistencyDays": 7,
+        "foodTypeCount": 2,
+        "avgMealsPerDay": 2.0,
+        "avgCaloriesPerDay": 980.0,
+        "weightKg": 28.5,
+        "calorieTargetPerDay": 997.5,
+        "calorieRatio": 0.9825
+      }
+    },
+    "symptoms": {
+      "score": 15.3,
+      "maxScore": 25.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["SYMPTOM_RESULT_AVAILABLE"],
+      "evidence": {
+        "confidence": 0.9,
+        "urgency": "CONSULT_SOON"
+      }
+    },
+    "preventiveCare": {
+      "score": 9.4,
+      "maxScore": 10.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["PREVENTIVE_CARE_CURRENT"],
+      "evidence": {
+        "recentVetVisit": true,
+        "vaccinationsUpToDate": true,
+        "medicationAdherence": 0.7143
+      }
+    },
+    "baseline": {
+      "score": 10.0,
+      "maxScore": 10.0,
+      "availability": "AVAILABLE",
+      "included": true,
+      "reasonCodes": ["BASELINE_STABLE"],
+      "evidence": {
+        "ageMonths": 36,
+        "weightMeasurementCount": 2,
+        "weightStability": 1.0
+      }
+    }
   },
   "conditionCap": 85,
   "classifierCondition": "Musculoskeletal Conditions",
   "narrative": "Your Labrador is doing well overall with excellent activity and sleep scores...",
   "recommendations": [
     "Continue current exercise routine with gentle low-impact activity.",
-    "Monitor for increased stiffness after rest — note timing and duration.",
-    "Consider adding an omega-3 supplement for joint support."
+    "Monitor for increased stiffness after rest — note timing and duration."
+  ],
+  "reminders": [
+    {
+      "reminder": "Medication",
+      "text": "Check the existing medication schedule recorded for your pet."
+    }
+  ],
+  "trackingRecommendations": [
+    {
+      "dimension": "Activity",
+      "text": "Keep tracking daily activity to maintain reliable wellness trends.",
+      "requiredInputs": [
+        "activity.avgStepsPerDay",
+        "activity.avgActiveMinutesPerDay"
+      ],
+      "suggestedReminderTypes": ["Activity"]
+    },
+    {
+      "dimension": "Diet",
+      "text": "Keep logging meals consistently to maintain reliable wellness trends.",
+      "requiredInputs": [
+        "feeding.avgMealsPerDay",
+        "feeding.consistencyDays"
+      ],
+      "suggestedReminderTypes": ["Feeding"]
+    },
+    {
+      "dimension": "PreventiveCare",
+      "text": "Keep vaccination and veterinary-visit records current for reliable wellness trends.",
+      "requiredInputs": [
+        "preventiveCare.vaccinationsUpToDate",
+        "preventiveCare.recentVetVisit"
+      ],
+      "suggestedReminderTypes": ["Vaccination", "VetVisit"]
+    }
   ],
   "disclaimer": "This wellness indicator is based on tracked activity, feeding, and care data. It is not a clinical assessment and does not replace a veterinary examination."
 }
 ```
+
+**Partial response example:**
+
+```json
+{
+  "wellnessScore": 100,
+  "band": "EXCELLENT",
+  "bandLabel": "Excellent",
+  "scoreStatus": "PARTIAL",
+  "dataCoverage": 0.6667,
+  "trackingRecommendations": [
+    {
+      "dimension": "Sleep",
+      "text": "Track daily sleep duration to include sleep in the wellness score.",
+      "requiredInputs": ["activity.avgSleepHoursPerDay"],
+      "suggestedReminderTypes": []
+    },
+    {
+      "dimension": "PreventiveCare",
+      "text": "Record vaccination and recent veterinary-visit status to include preventive care.",
+      "requiredInputs": [
+        "preventiveCare.vaccinationsUpToDate",
+        "preventiveCare.recentVetVisit"
+      ],
+      "suggestedReminderTypes": ["Vaccination", "VetVisit"]
+    }
+  ]
+}
+```
+
+This example assumes Activity, Diet, and Baseline are available. The partial score
+is normalized only across available dimensions after the reliability gate passes.
+Consumers should show the coverage/status alongside it rather than presenting it
+as a complete assessment.
+
+**Insufficient-data response behavior:**
+
+```json
+{
+  "wellnessScore": null,
+  "band": null,
+  "bandLabel": null,
+  "scoreStatus": "INSUFFICIENT_DATA",
+  "dataCoverage": 0.2667,
+  "narrative": "There is not enough tracked data to calculate a wellness score yet. Record the suggested activity, feeding, preventive-care, or baseline details and request a new assessment.",
+  "recommendations": [],
+  "reminders": [],
+  "trackingRecommendations": [
+    {
+      "dimension": "Activity",
+      "text": "Track daily steps or active minutes to include activity in the wellness score.",
+      "requiredInputs": [
+        "activity.avgStepsPerDay",
+        "activity.avgActiveMinutesPerDay"
+      ],
+      "suggestedReminderTypes": ["Activity"]
+    }
+  ]
+}
+```
+
+This example represents otherwise strong feeding data without enough independent
+wellness context. Gemini and score-derived reminders are skipped when status is
+`INSUFFICIENT_DATA`. `trackingRecommendations` is deterministic, ordered by
+dimension, and intentionally separate from health `recommendations` and care
+`reminders`.
+
+Each tracking item also returns `suggestedReminderTypes` using the C# backend's
+exact `ReminderType` wire values. These values let the client offer a separate
+“Create reminder” action after explicit user confirmation:
+
+| Tracking dimension | Suggested reminder types |
+|---|---|
+| Activity | `Activity` |
+| Sleep | none — no matching backend type |
+| Diet | `Feeding` |
+| PreventiveCare | `Vaccination`, `VetVisit` |
+| Baseline | none — no matching backend type |
+
+The microservice does not create or schedule reminders and does not return repeat
+frequency, time, or notification settings. Those values must be collected by the
+client/backend reminder flow. `Medication` is never suggested for wellness tracking.
+
+For complete `GOOD` or `EXCELLENT` assessments, `trackingRecommendations` contains
+positive maintenance guidance for Activity, Diet, and PreventiveCare. It tells the
+owner what to keep tracking even though the underlying data is already present.
+Complete `FAIR`, `CONCERNING`, and `CRITICAL` assessments omit maintenance guidance
+so health recommendations remain prominent. Suggested reminder types already
+present in `reminders` are removed to avoid duplicate calls to action.
+
+**Calculation and consumer compatibility:**
+
+- `calculationVersion` starts at `2.0.0`. Changes to scoring, coverage,
+  availability, or reason-code meaning require a version increment.
+- `evaluatedAt` is always a timezone-aware UTC timestamp.
+- `evaluationWindow` is optional, inclusive, echoed unchanged, and rejected when
+  `startDate` is after `endDate`.
+- Version 2 is breaking: C# DTOs must make `WellnessScore`, `Band`, and
+  `BandLabel` nullable; add status, coverage, calculation metadata, availability,
+  reason-code, evidence, and tracking-recommendation fields; and handle
+  `INSUFFICIENT_DATA` without mapping null to zero.
+- The C# tracking-recommendation DTO should deserialize
+  `SuggestedReminderTypes` as a collection of the existing `ReminderType` enum.
+  An empty collection means the current backend enum has no safe semantic match.
+- C# and mobile consumers must not infer score eligibility from the presence of
+  any single breakdown item; `scoreStatus` is authoritative and sparse but
+  evaluable requests can intentionally return a null score.
+- C# consumers should treat reason-code strings as an extensible contract and
+  tolerate unknown future values. `included` remains a compatibility field but
+  should be derived from or checked against `availability`.
+
+Each item in `reminders` combines actionable text with the C# backend's exact
+`ReminderType` wire value:
+`Feeding`, `Activity`, `Medication`, `Vaccination`, `ParasiteTreatment`,
+`VetVisit`, and `Grooming`. Scheduling values such as `Daily`, `Weekly`,
+`Monthly`, and `Once` belong to the backend's separate `RepeatType` enum and
+are never returned here. Low diet/activity scores produce `Feeding`/`Activity`;
+adherence below 90% produces `Medication`; incomplete vaccinations produce
+`Vaccination`; and an overdue visit or concerning symptom score produces
+`VetVisit`. Recommendation text does not repeat actions already represented by
+`reminders`, and medication, dosing, parasite-product, and supplement advice is
+excluded. Medication names are never copied into generated output; adherence can
+only produce a generic reminder about an existing backend-recorded schedule.
+When no medication schedule exists, a classifier result with `CONSULT_SOON`,
+`URGENT`, or `EMERGENCY` urgency can only produce a `VetVisit` reminder to discuss
+whether clinical treatment is needed—it never proposes a drug.
+Weight tracking guidance remains in `recommendations`.
 
 ---
 
