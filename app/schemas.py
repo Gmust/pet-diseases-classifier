@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated
 
@@ -93,6 +94,63 @@ class TrendDirection(StrEnum):
     DECLINING = "DECLINING"  # score fell by > 3 pts
 
 
+class WellnessScoreStatus(StrEnum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
+class WellnessDimensionAvailability(StrEnum):
+    AVAILABLE = "AVAILABLE"
+    MISSING = "MISSING"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class WellnessDimension(StrEnum):
+    ACTIVITY = "Activity"
+    SLEEP = "Sleep"
+    DIET = "Diet"
+    SYMPTOMS = "Symptoms"
+    PREVENTIVE_CARE = "PreventiveCare"
+    BASELINE = "Baseline"
+
+
+class WellnessReasonCode(StrEnum):
+    ACTIVITY_DATA_MISSING = "ACTIVITY_DATA_MISSING"
+    ACTIVITY_TARGET_MET = "ACTIVITY_TARGET_MET"
+    ACTIVITY_BELOW_TARGET = "ACTIVITY_BELOW_TARGET"
+    ACTIVITY_NOT_APPLICABLE = "ACTIVITY_NOT_APPLICABLE"
+    SLEEP_DATA_MISSING = "SLEEP_DATA_MISSING"
+    SLEEP_WITHIN_RANGE = "SLEEP_WITHIN_RANGE"
+    SLEEP_OUTSIDE_RANGE = "SLEEP_OUTSIDE_RANGE"
+    SLEEP_NOT_APPLICABLE = "SLEEP_NOT_APPLICABLE"
+    DIET_DATA_MISSING = "DIET_DATA_MISSING"
+    DIET_TRACKING_STRONG = "DIET_TRACKING_STRONG"
+    DIET_TRACKING_NEEDS_ATTENTION = "DIET_TRACKING_NEEDS_ATTENTION"
+    SYMPTOMS_NOT_REPORTED = "SYMPTOMS_NOT_REPORTED"
+    SYMPTOM_CLASSIFIER_UNAVAILABLE = "SYMPTOM_CLASSIFIER_UNAVAILABLE"
+    SYMPTOM_CLASSIFIER_FAILED = "SYMPTOM_CLASSIFIER_FAILED"
+    SYMPTOM_RESULT_AVAILABLE = "SYMPTOM_RESULT_AVAILABLE"
+    PREVENTIVE_CARE_DATA_MISSING = "PREVENTIVE_CARE_DATA_MISSING"
+    PREVENTIVE_CARE_CURRENT = "PREVENTIVE_CARE_CURRENT"
+    PREVENTIVE_CARE_NEEDS_ATTENTION = "PREVENTIVE_CARE_NEEDS_ATTENTION"
+    BASELINE_DATA_MISSING = "BASELINE_DATA_MISSING"
+    BASELINE_STABLE = "BASELINE_STABLE"
+    BASELINE_NEEDS_ATTENTION = "BASELINE_NEEDS_ATTENTION"
+
+
+class ReminderType(StrEnum):
+    """Exact wire values from the C# backend's ReminderType enum."""
+
+    FEEDING = "Feeding"
+    ACTIVITY = "Activity"
+    MEDICATION = "Medication"
+    VACCINATION = "Vaccination"
+    PARASITE_TREATMENT = "ParasiteTreatment"
+    VET_VISIT = "VetVisit"
+    GROOMING = "Grooming"
+
+
 class WellnessPet(BaseModel):
     species: str = Field(..., examples=["dog"])
     breed: str | None = Field(default=None, examples=["Labrador"])
@@ -177,6 +235,19 @@ class WellnessMedication(BaseModel):
 
     name: str
     frequency: str | None = None
+    scheduled_doses: int | None = Field(default=None, alias="scheduledDoses", ge=0)
+    completed_doses: int | None = Field(default=None, alias="completedDoses", ge=0)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WellnessWeightMeasurement(BaseModel):
+    """Compatible with the backend's PetWeightLogResponseDto fields."""
+
+    weight_kg: float = Field(..., alias="weightKg", gt=0)
+    measured_at: datetime = Field(..., alias="measuredAt")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class WellnessPreventiveCare(BaseModel):
@@ -188,6 +259,19 @@ class WellnessPreventiveCare(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class WellnessEvaluationWindow(BaseModel):
+    start_date: date = Field(..., alias="startDate")
+    end_date: date = Field(..., alias="endDate")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_date_order(self) -> "WellnessEvaluationWindow":
+        if self.start_date > self.end_date:
+            raise ValueError("evaluationWindow.startDate must be on or before endDate")
+        return self
+
+
 class WellnessRequest(BaseModel):
     pet: WellnessPet
     activity: WellnessActivity | None = None
@@ -197,6 +281,9 @@ class WellnessRequest(BaseModel):
     )
     active_medications: list[WellnessMedication] = Field(
         default_factory=list, alias="activeMedications"
+    )
+    weight_history: list[WellnessWeightMeasurement] = Field(
+        default_factory=list, alias="weightHistory"
     )
     preventive_care: WellnessPreventiveCare | None = Field(default=None, alias="preventiveCare")
     current_symptoms: str | None = Field(
@@ -212,48 +299,38 @@ class WellnessRequest(BaseModel):
         ge=0,
         le=100,
     )
+    evaluation_window: WellnessEvaluationWindow | None = Field(
+        default=None,
+        alias="evaluationWindow",
+        description="Optional inclusive date range represented by the aggregated inputs.",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
-
-    @model_validator(mode="after")
-    def require_score_bearing_evidence(self) -> "WellnessRequest":
-        activity_evidence = self.activity is not None and any(
-            value is not None
-            for value in (
-                self.activity.avg_steps_per_day,
-                self.activity.avg_active_minutes_per_day,
-                self.activity.avg_sleep_hours_per_day,
-            )
-        )
-        feeding_evidence = self.feeding is not None and (
-            self.feeding.avg_meals_per_day is not None
-            or self.feeding.avg_calories_per_day is not None
-            or bool(self.feeding.food_types)
-            or self.feeding.consistency_days > 0
-        )
-        has_evidence = any(
-            (
-                self.pet.age_months is not None,
-                self.pet.weight_kg is not None,
-                activity_evidence,
-                feeding_evidence,
-                bool(self.active_conditions),
-                self.preventive_care is not None,
-                bool(self.current_symptoms and self.current_symptoms.strip()),
-            )
-        )
-        if not has_evidence:
-            raise ValueError(
-                "At least one tracked wellness dimension is required; species alone is insufficient."
-            )
-        return self
-
 
 class WellnessBreakdownItem(BaseModel):
     score: float
     max_score: float = Field(..., alias="maxScore")
+    availability: WellnessDimensionAvailability
+    included: bool = Field(
+        description="False when the source data is unavailable and this dimension is excluded from the total.",
+    )
+    reason_codes: list[WellnessReasonCode] = Field(
+        ...,
+        alias="reasonCodes",
+        min_length=1,
+    )
+    evidence: dict[str, bool | int | float | str] = Field(
+        default_factory=dict,
+        max_length=8,
+        description="Allowlisted scalar values used by the deterministic scoring rule.",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def applicable(self) -> bool:
+        """True unless the dimension does not apply to this species at all."""
+        return self.availability != WellnessDimensionAvailability.NOT_APPLICABLE
 
 
 class WellnessBreakdown(BaseModel):
@@ -267,10 +344,45 @@ class WellnessBreakdown(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class WellnessReminder(BaseModel):
+    """Actionable reminder suggestion using the backend ReminderType wire value."""
+
+    reminder: ReminderType
+    text: str = Field(..., min_length=1)
+
+
+class WellnessTrackingRecommendation(BaseModel):
+    dimension: WellnessDimension
+    text: str = Field(..., min_length=1)
+    required_inputs: list[str] = Field(
+        ...,
+        alias="requiredInputs",
+        min_length=1,
+    )
+    suggested_reminder_types: list[ReminderType] = Field(
+        default_factory=list,
+        alias="suggestedReminderTypes",
+        description=(
+            "Backend-compatible reminder types a client may offer for explicit "
+            "user-confirmed creation; this service does not schedule reminders."
+        ),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class WellnessResponse(BaseModel):
-    wellness_score: int = Field(..., alias="wellnessScore", ge=0, le=100)
-    band: WellnessBand
-    band_label: str = Field(..., alias="bandLabel")
+    wellness_score: int | None = Field(default=None, alias="wellnessScore", ge=0, le=100)
+    band: WellnessBand | None = None
+    band_label: str | None = Field(default=None, alias="bandLabel")
+    score_status: WellnessScoreStatus = Field(..., alias="scoreStatus")
+    data_coverage: float = Field(..., alias="dataCoverage", ge=0, le=1)
+    calculation_version: str = Field(..., alias="calculationVersion", pattern=r"^\d+\.\d+\.\d+$")
+    evaluated_at: datetime = Field(..., alias="evaluatedAt")
+    evaluation_window: WellnessEvaluationWindow | None = Field(
+        default=None,
+        alias="evaluationWindow",
+    )
     trend: TrendDirection | None = None
     breakdown: WellnessBreakdown
     condition_cap: int | None = Field(default=None, alias="conditionCap")
@@ -281,6 +393,11 @@ class WellnessResponse(BaseModel):
     )
     narrative: str
     recommendations: list[str]
+    reminders: list[WellnessReminder] = Field(default_factory=list)
+    tracking_recommendations: list[WellnessTrackingRecommendation] = Field(
+        default_factory=list,
+        alias="trackingRecommendations",
+    )
     disclaimer: str
 
     model_config = ConfigDict(populate_by_name=True)

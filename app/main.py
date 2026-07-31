@@ -213,7 +213,9 @@ def wellness(payload: WellnessRequest) -> WellnessResponse:
     - Score is rule-based across 6 dimensions; Gemini generates the narrative and recommendations.
     - Active chronic conditions cap the maximum possible score.
     - If currentSymptoms is provided, it is passed through the classifier to influence the score.
-    - Missing dimensions are scaled out — partial data is always accepted.
+    - Missing dimensions are scaled out and reported through scoreStatus and dataCoverage.
+    - Data below the reliability gate returns nullable score fields plus deterministic trackingRecommendations.
+    - reminders use the C# backend ReminderType wire values with actionable text.
     """
     services: AppServices = app.state.services
     return run_wellness(payload, services)

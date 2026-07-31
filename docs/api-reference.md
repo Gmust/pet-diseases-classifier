@@ -194,11 +194,13 @@ in `dotnet-chat-integration.md`.
 
 ## `POST /wellness`
 
-Rule-based wellness score (0–100) across six dimensions, with a generated
-narrative and recommendations. Designed to be called by the backend from
-aggregated DB records — no manual user input required. Missing dimensions are
-scaled out after at least one score-bearing input is supplied. A species-only
-request returns `422`; absence of observations is not positive wellness evidence.
+Rule-based wellness assessment across six dimensions, with a generated narrative
+and recommendations when enough data is available. Designed to be called by the
+backend from aggregated DB records — no manual user input required. Missing
+dimensions are scaled out once the reliability requirements are met. A
+species-only request returns `200` with `scoreStatus: "INSUFFICIENT_DATA"` and
+null score and band fields; absence of observations is not positive wellness
+evidence.
 
 **Request** (all sub-objects optional except `pet`)
 
@@ -229,9 +231,11 @@ request returns `422`; absence of observations is not positive wellness evidence
 
 | Field | Type | Notes |
 |---|---|---|
-| `wellnessScore` | int | 0–100. |
-| `band` | string | `EXCELLENT \| GOOD \| FAIR \| CONCERNING \| CRITICAL`. |
-| `bandLabel` | string | Human-readable band label. |
+| `wellnessScore` | int? | 0–100, or `null` when `scoreStatus` is `INSUFFICIENT_DATA`. |
+| `band` | string? | `EXCELLENT \| GOOD \| FAIR \| CONCERNING \| CRITICAL`, or `null` when no score is available. |
+| `bandLabel` | string? | Human-readable band label, or `null` when no score is available. |
+| `scoreStatus` | string | `COMPLETE \| PARTIAL \| INSUFFICIENT_DATA`. |
+| `dataCoverage` | number | Weighted foundational-data coverage from 0–1. |
 | `trend` | string? | `IMPROVING \| STABLE \| DECLINING` (only if `previousScore` provided). |
 | `breakdown` | object | Per-dimension `{ score, maxScore }` for `activity, sleep, diet, symptoms, preventiveCare, baseline`. |
 | `conditionCap` | int? | Max score allowed given active chronic conditions, if any. |

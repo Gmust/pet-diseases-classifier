@@ -252,9 +252,8 @@ def test_chat_answer_never_leaks_internal_endpoints(client):
     assert "/predict" not in resp.json()["answer"]
 
 
-def test_wellness_partial_data_not_punished(client):
-    # Healthy dog, but feeding + preventiveCare omitted. Missing dims must be
-    # excluded (maxScore 0), not scored as zeros that tank the result.
+def test_wellness_partial_data_below_reliability_gate_is_explicit(client):
+    # Healthy activity alone is not enough for a reliable numeric score.
     resp = client.post(
         "/wellness",
         json={
@@ -265,17 +264,22 @@ def test_wellness_partial_data_not_punished(client):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["breakdown"]["diet"]["maxScore"] == 0
-    assert body["breakdown"]["preventiveCare"]["maxScore"] == 0
-    assert body["wellnessScore"] >= 75  # GOOD-ish, not "CONCERNING" from missing data
-    assert body["band"] in ("GOOD", "EXCELLENT")
+    assert body["breakdown"]["diet"]["availability"] == "MISSING"
+    assert body["breakdown"]["diet"]["included"] is False
+    assert body["breakdown"]["preventiveCare"]["availability"] == "MISSING"
+    assert body["scoreStatus"] == "INSUFFICIENT_DATA"
+    assert body["wellnessScore"] is None
+    assert body["band"] is None
 
 
-def test_wellness_species_only_is_rejected_as_insufficient_data(client):
+def test_wellness_species_only_returns_insufficient_data_contract(client):
     resp = client.post("/wellness", json={"pet": {"species": "cat"}})
 
-    assert resp.status_code == 422
-    assert "species alone is insufficient" in resp.text
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["scoreStatus"] == "INSUFFICIENT_DATA"
+    assert body["wellnessScore"] is None
+    assert body["dataCoverage"] == 0
 
 
 def test_wellness_rejects_implausible_numeric_values(client):

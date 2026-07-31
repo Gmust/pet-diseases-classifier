@@ -151,21 +151,23 @@ def test_static_explanation_is_cautious_and_mentions_condition():
 # --- wellness narrative shortening ------------------------------------------
 
 
-def test_wellness_missing_dimensions_are_excluded_not_zeroed():
-    from app.schemas import WellnessPet
+def test_wellness_missing_dimensions_are_explicit_and_excluded():
+    from app.schemas import WellnessDimensionAvailability, WellnessPet
     from app.services.wellness_service import (
         _score_baseline,
         _score_diet,
         _score_preventive,
     )
 
-    # Absent dimensions must drop out of the total (max_score == 0), not score 0/MAX.
-    assert _score_diet(None, WellnessPet(species="dog")).max_score == 0
-    assert _score_preventive(None).max_score == 0
-    assert _score_baseline(WellnessPet(species="dog")).max_score == 0  # no age, no weight
-    # Baseline with only weight scales its own max (5, not 10).
-    item = _score_baseline(WellnessPet(species="dog", weightKg=20.0))
-    assert item.max_score == 5 and item.score == 5
+    items = (
+        _score_diet(None, WellnessPet(species="dog")),
+        _score_preventive(None, None),
+        _score_baseline(WellnessPet(species="dog"), [], None),
+    )
+    for item in items:
+        assert item.availability == WellnessDimensionAvailability.MISSING
+        assert item.included is False
+        assert item.score == 0
 
 
 def test_narrative_prompt_marks_missing_dimensions_not_tracked():
@@ -173,27 +175,49 @@ def test_narrative_prompt_marks_missing_dimensions_not_tracked():
         WellnessBand,
         WellnessBreakdown,
         WellnessBreakdownItem,
+        WellnessDimensionAvailability,
         WellnessPet,
+        WellnessReasonCode,
         WellnessRequest,
+        WellnessScoreStatus,
     )
     from app.services.wellness_service import _build_narrative_prompt
 
-    def item(score, mx):
-        return WellnessBreakdownItem(score=score, max_score=mx)
+    def item(score, mx, availability, reason):
+        return WellnessBreakdownItem(
+            score=score,
+            max_score=mx,
+            availability=availability,
+            included=availability == WellnessDimensionAvailability.AVAILABLE,
+            reason_codes=[reason],
+        )
 
     breakdown = WellnessBreakdown(
-        activity=item(20, 20),
-        sleep=item(8, 15),
-        diet=item(0, 0),  # not tracked
-        symptoms=item(20, 25),
-        preventive_care=item(0, 0),  # not tracked
-        baseline=item(5, 5),
+        activity=item(20, 20, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.ACTIVITY_TARGET_MET),
+        sleep=item(8, 15, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.SLEEP_WITHIN_RANGE),
+        diet=item(0, 20, WellnessDimensionAvailability.MISSING, WellnessReasonCode.DIET_DATA_MISSING),
+        symptoms=item(20, 25, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.SYMPTOM_RESULT_AVAILABLE),
+        preventive_care=item(0, 10, WellnessDimensionAvailability.MISSING, WellnessReasonCode.PREVENTIVE_CARE_DATA_MISSING),
+        baseline=item(10, 10, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.BASELINE_STABLE),
     )
     req = WellnessRequest(pet=WellnessPet(species="dog", weightKg=20))
-    prompt = _build_narrative_prompt(req, breakdown, 81, WellnessBand.GOOD, None, None)
-    # Missing dims are labelled, not shown as "0/0" (which reads as a failure).
-    assert "Diet:" in prompt and "not tracked" in prompt
-    assert "0/0" not in prompt and "0.0/0.0" not in prompt
+    prompt = _build_narrative_prompt(
+        req,
+        breakdown,
+        81,
+        WellnessBand.GOOD,
+        WellnessScoreStatus.PARTIAL,
+        0.75,
+        None,
+        None,
+        [],
+        None,
+    )
+    # Missing dimensions are labelled as unavailable, not shown as a failed score.
+    assert "Diet:" in prompt and "not available" in prompt
+    assert "Missing dimensions: Diet, PreventiveCare" in prompt
+    diet_line = next(line for line in prompt.splitlines() if "Diet:" in line)
+    assert "0/20" not in diet_line and "0.0/20.0" not in diet_line
     # A scored dimension still shows its score.
     assert "20/20" in prompt or "20.0/20.0" in prompt
 
