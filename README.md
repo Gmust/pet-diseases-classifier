@@ -733,3 +733,14 @@ sam delete --stack-name pet-care-ai
    promote only measured improvements.
 3. **More epochs** — if val F1 is still rising at the end, increase `--epochs`.
 4. **Increase `--patience`** — set to 3 or 4 to let the model recover from temporary plateaus.
+
+---
+
+## Project authorship and licensing
+
+This repository is part of **Smart Pet Care App**, a collaborative student diploma project
+consisting of a mobile client, a backend API, AI services, designs and project documentation.
+
+See [`PROJECT_NOTICE.md`](PROJECT_NOTICE.md) and [`LICENSE`](LICENSE) in this repository, and
+the project agreement and contributor documentation in the canonical project repository
+(https://github.com/Gmust/smart-pet-care-app), for authorship and internal project usage terms.
