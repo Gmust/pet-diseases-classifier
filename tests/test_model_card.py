@@ -10,7 +10,8 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from app.ml.model_card import (  # noqa: E402
+from app.inference.model_validation import ModelValidationError  # noqa: E402
+from ml_pipeline.model_card import (  # noqa: E402
     BUNDLE_REQUIRED_FILES,
     build_metrics,
     render_model_card,
@@ -18,7 +19,6 @@ from app.ml.model_card import (  # noqa: E402
     write_metrics,
     write_model_card,
 )
-from app.ml.model_validation import ModelValidationError  # noqa: E402
 
 LABELS = ["Digestive Issues", "Skin Conditions"]
 

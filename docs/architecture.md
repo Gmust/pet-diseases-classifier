@@ -6,21 +6,35 @@ ADR in `docs/adr/` in the same pull request.
 
 ## Runtime request path
 
-1. `app/main.py` owns FastAPI transport, authentication, stable HTTP errors,
-   liveness/readiness, and dependency construction.
-2. `app/schemas.py` validates the public camelCase request/response contract.
-3. `app/use_cases/` orchestrates predict, chat, and wellness behavior without
-   depending on FastAPI.
-4. `app/services/triage_safety.py` applies deterministic emergency policy before
-   any generated response. `advice_safety.py` validates generated/static advice.
-5. Classifiers implement `app/ml/protocols.py`; Torch and ONNX adapters live in
-   `predictor.py` and `onnx_predictor.py`. Gemini and wellness infrastructure
-   adapters live under `app/services/`.
+1. `app/api/` owns FastAPI transport: `deps.py` (authentication, services
+   accessor), `errors.py` (stable HTTP errors, use-case error mapping), and one
+   module per endpoint under `routes/`. `app/main.py` re-exports the app so
+   `app.main:app` stays the entry point.
+2. Each domain package owns its own request/response contract:
+   `app/wellness/schemas.py` and `responses.py`, `app/triage/schemas.py`,
+   `app/feeding/schemas.py`. Vocabulary shared across domains
+   (urgency, specialist, disease category, species) lives in `app/domain/enums.py`.
+3. Domain entry points orchestrate behavior without depending on FastAPI:
+   `app/triage/predict.py` and `chat.py`, `app/wellness/entrypoint.py`,
+   `app/feeding/summary.py`.
+4. `app/triage/safety.py` applies deterministic emergency policy before any
+   generated response. `app/triage/advice.py` validates generated/static advice.
+5. Classifiers implement `app/inference/protocols.py`; Torch and ONNX adapters
+   live in `app/inference/predictor.py` and `onnx_predictor.py`. Gemini
+   infrastructure lives under `app/llm/`, and wellness scoring is split across
+   `app/wellness/scoring/`, `norms.py`, `reminders.py`, `tracking.py`, and
+   `narrative.py`, sequenced by `app/wellness/service.py`.
 6. `app/observability.py` emits structured logs without symptom or prompt text.
+
+Dependencies point one way: `app/api/` -> domain packages (`wellness`, `triage`,
+`feeding`) -> shared packages (`inference`, `llm`, `domain`). Domain packages do
+not import each other. The training pipeline lives outside `app/` in
+`ml_pipeline/`, and nothing under `app/` may import it — both Lambda images copy
+`app/` only. `tests/test_domain_boundaries.py` enforces all of this.
 
 `app/lambda_handler.py` is the AWS entry point; Uvicorn imports `app.main:app`
 for the server image. `app/app_services.py` is the composition container shared
-by both entry points.
+by both entry points, built by `app/bootstrap.py` at Lambda INIT.
 
 ## Safety boundary
 

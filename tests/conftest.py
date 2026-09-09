@@ -16,11 +16,21 @@ import os
 import pytest
 
 # Disable auth + Gemini before the app is imported anywhere.
-os.environ.pop("API_KEY", None)
-os.environ.pop("GEMINI_API_KEY", None)
+# GEMINI_API_KEYS (plural) must be cleared too: Settings.resolved_gemini_api_keys()
+# merges both vars, so leaving the plural one set builds a real rotating client
+# from a developer's local .env and the suite silently starts calling the API.
+GEMINI_ENV_VARS = ("GEMINI_API_KEY", "GEMINI_API_KEYS")
 
-from app.ml.predictor import PredictionResult  # noqa: E402  (after env setup)
-from app.ml.protocols import ClassifierMetadata  # noqa: E402  (after env setup)
+for _var in ("API_KEY", *GEMINI_ENV_VARS):
+    os.environ.pop(_var, None)
+
+# The suite fakes only the torch predictor, so pin the backend: with
+# MODEL_BACKEND=onnx exported (or in a local .env) build_services() would reach
+# the real ONNX runtime and every API test would fail in setup.
+os.environ["MODEL_BACKEND"] = "torch"
+
+from app.inference.predictor import PredictionResult  # noqa: E402  (after env setup)
+from app.inference.protocols import ClassifierMetadata  # noqa: E402  (after env setup)
 
 
 class FakePredictor:
@@ -77,11 +87,17 @@ def client(monkeypatch, fake_predictor):
     from fastapi.testclient import TestClient
 
     from app import main
+    from app.inference.predictor import Predictor
 
+    # app.main calls load_dotenv() at import, which repopulates anything cleared
+    # above from a local .env, so clear it again now that the import has happened.
     monkeypatch.delenv("API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    for var in GEMINI_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MODEL_BACKEND", "torch")
     # Patch model loading so the lifespan uses the fake (no torch, no weights).
-    monkeypatch.setattr(main.Predictor, "from_paths", classmethod(lambda cls, **kw: fake_predictor))
+    # Patched on the class itself, so it applies wherever app.bootstrap resolves it.
+    monkeypatch.setattr(Predictor, "from_paths", classmethod(lambda cls, **kw: fake_predictor))
     # ensure_services() caches on app.state and is idempotent, so reset it per test
     # to force a rebuild with THIS test's fake_predictor.
     main.app.state.services = None

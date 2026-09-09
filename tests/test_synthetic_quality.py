@@ -7,7 +7,7 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from app.ml.synthetic_quality import (  # noqa: E402
+from ml_pipeline.synthetic_quality import (  # noqa: E402
     apply_quality_gates,
     detect_diagnosis_leakage,
     find_near_duplicates,

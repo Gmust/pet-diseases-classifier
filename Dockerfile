@@ -26,7 +26,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY app/ ./app/
 COPY models/transformer_model/ ./models/transformer_model/
-RUN python -m app.ml.model_registry /app/models/transformer_model
+RUN python -m app.inference.model_registry /app/models/transformer_model
 COPY .env.example .env.example
 
 RUN groupadd --gid 10001 app && \

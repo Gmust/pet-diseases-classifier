@@ -6,8 +6,8 @@ import pytest
 
 pd = pytest.importorskip("pandas")  # needs the training env (requirements-train.txt)
 
-from app.ml.dataset_schema import normalize_text  # noqa: E402
-from app.ml.prepare_dataset import (  # noqa: E402
+from ml_pipeline.dataset_schema import normalize_text  # noqa: E402
+from ml_pipeline.prepare_dataset import (  # noqa: E402
     apply_label_map,
     carve_owner_eval,
     dedup,

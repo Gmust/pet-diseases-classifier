@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from app.ml.predictor import PredictionResult
-from app.ml.release_gates import (
+from app.inference.predictor import PredictionResult
+from ml_pipeline.release_gates import (
     ReleaseGateError,
     evaluate_backend_parity,
     evaluate_safety_cases,

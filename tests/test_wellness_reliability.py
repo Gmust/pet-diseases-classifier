@@ -3,7 +3,8 @@ from unittest import TestCase
 
 from pydantic import ValidationError
 
-from app.schemas import (
+from app.wellness.norms import CALCULATION_VERSION
+from app.wellness.schemas import (
     ReminderType,
     WellnessActivity,
     WellnessDimension,
@@ -14,10 +15,12 @@ from app.schemas import (
     WellnessPet,
     WellnessPreventiveCare,
     WellnessRequest,
+    WellnessRoutineCareEntry,
     WellnessScoreStatus,
     WellnessWeightMeasurement,
 )
-from app.services.wellness_service import CALCULATION_VERSION, WellnessService
+from app.wellness.service import WellnessService
+from app.wellness.tracking import _ROUTINE_CARE_TYPES
 
 
 class _NarrativeResponse:
@@ -147,6 +150,7 @@ class WellnessReliabilityTests(TestCase):
                 WellnessDimension.ACTIVITY,
                 WellnessDimension.DIET,
                 WellnessDimension.PREVENTIVE_CARE,
+                WellnessDimension.ROUTINE_CARE,
             ],
         )
         self.assertEqual(
@@ -276,9 +280,7 @@ class WellnessReliabilityTests(TestCase):
         client = _CapturingClient()
         self.service.client = client
 
-        response = self.service.score(
-            WellnessRequest(pet=WellnessPet(species="dog"))
-        )
+        response = self.service.score(WellnessRequest(pet=WellnessPet(species="dog")))
 
         self.assertEqual(
             response.score_status,
@@ -312,8 +314,7 @@ class WellnessReliabilityTests(TestCase):
                 {
                     "reminder": "VetVisit",
                     "text": (
-                        "Consult a veterinarian about whether clinical treatment "
-                        "is needed."
+                        "Consult a veterinarian about whether clinical treatment " "is needed."
                     ),
                 }
             ],
@@ -340,9 +341,7 @@ class WellnessReliabilityTests(TestCase):
             for code in item.reason_codes:
                 self.assertEqual(code.value, code.value.upper())
 
-        evidence_dump = str(
-            response.breakdown.model_dump(by_alias=True, mode="json")
-        )
+        evidence_dump = str(response.breakdown.model_dump(by_alias=True, mode="json"))
         self.assertNotIn("private raw symptom phrase", evidence_dump)
         self.assertNotIn("PrivateMedicationName", evidence_dump)
 
@@ -452,6 +451,7 @@ class WellnessReliabilityTests(TestCase):
                 WellnessDimension.SLEEP,
                 WellnessDimension.PREVENTIVE_CARE,
                 WellnessDimension.BASELINE,
+                WellnessDimension.ROUTINE_CARE,
             ],
         )
         self.assertEqual(
@@ -465,9 +465,7 @@ class WellnessReliabilityTests(TestCase):
                     msg=f"Unknown WellnessRequest path: {path}",
                 )
 
-        text = " ".join(
-            item.text.lower() for item in response.tracking_recommendations
-        )
+        text = " ".join(item.text.lower() for item in response.tracking_recommendations)
         for unsafe_term in (
             "diagnos",
             "treatment",
@@ -484,9 +482,7 @@ class WellnessReliabilityTests(TestCase):
         )
 
     def test_tracking_recommendations_suggest_exact_backend_reminder_types(self) -> None:
-        response = self.service.score(
-            WellnessRequest(pet=WellnessPet(species="dog"))
-        )
+        response = self.service.score(WellnessRequest(pet=WellnessPet(species="dog")))
         expected = {
             WellnessDimension.ACTIVITY: [ReminderType.ACTIVITY],
             WellnessDimension.SLEEP: [],
@@ -495,7 +491,8 @@ class WellnessReliabilityTests(TestCase):
                 ReminderType.VACCINATION,
                 ReminderType.VET_VISIT,
             ],
-            WellnessDimension.BASELINE: [],
+            WellnessDimension.BASELINE: [ReminderType.WEIGHING],
+            WellnessDimension.ROUTINE_CARE: list(_ROUTINE_CARE_TYPES),
         }
 
         self.assertEqual(
@@ -516,8 +513,7 @@ class WellnessReliabilityTests(TestCase):
 
         payload = response.model_dump(by_alias=True, mode="json")
         payload_by_dimension = {
-            item["dimension"]: item
-            for item in payload["trackingRecommendations"]
+            item["dimension"]: item for item in payload["trackingRecommendations"]
         }
         self.assertEqual(
             payload_by_dimension["Activity"]["suggestedReminderTypes"],
@@ -555,6 +551,7 @@ class WellnessReliabilityTests(TestCase):
                     ReminderType.VACCINATION,
                     ReminderType.VET_VISIT,
                 ],
+                WellnessDimension.ROUTINE_CARE: list(_ROUTINE_CARE_TYPES),
             },
         )
         for item in response.tracking_recommendations:
@@ -579,7 +576,11 @@ class WellnessReliabilityTests(TestCase):
 
         self.assertEqual(response.score_status, WellnessScoreStatus.COMPLETE)
         self.assertIn(response.band.value, {"FAIR", "CONCERNING", "CRITICAL"})
-        self.assertEqual(response.tracking_recommendations, [])
+        # Routine care is independent of the band, so only it survives here.
+        self.assertEqual(
+            [item.dimension for item in response.tracking_recommendations],
+            [WellnessDimension.ROUTINE_CARE],
+        )
 
     def test_maintenance_suggestions_do_not_duplicate_problem_reminders(self) -> None:
         request = _complete_request()
@@ -615,3 +616,62 @@ class WellnessReliabilityTests(TestCase):
             maintenance[WellnessDimension.PREVENTIVE_CARE],
             [ReminderType.VET_VISIT],
         )
+
+    def _routine_care_request(
+        self,
+        entries: list[WellnessRoutineCareEntry],
+    ) -> WellnessRequest:
+        request = _complete_request()
+        request.evaluation_window = WellnessEvaluationWindow(
+            start_date="2026-07-01",
+            end_date="2026-07-31",
+        )
+        request.routine_care = entries
+        return request
+
+    def _routine_care_item(self, request: WellnessRequest):
+        return [
+            item
+            for item in self.service.score(request).tracking_recommendations
+            if item.dimension == WellnessDimension.ROUTINE_CARE
+        ]
+
+    def test_missing_routine_care_suggests_every_grooming_reminder_type(self) -> None:
+        items = self._routine_care_item(self._routine_care_request([]))
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].suggested_reminder_types, list(_ROUTINE_CARE_TYPES))
+        self.assertEqual(items[0].required_inputs, ["routineCare"])
+        self.assertNotIn(ReminderType.DEWORMING, items[0].suggested_reminder_types)
+        self.assertNotIn(ReminderType.MEDICATION, items[0].suggested_reminder_types)
+
+    def test_routine_care_older_than_a_month_is_still_suggested(self) -> None:
+        request = self._routine_care_request(
+            [
+                WellnessRoutineCareEntry(type=ReminderType.BATHING, last_done_at="2026-06-15"),
+                WellnessRoutineCareEntry(type=ReminderType.BRUSHING, last_done_at="2026-07-20"),
+            ]
+        )
+
+        items = self._routine_care_item(request)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn(ReminderType.BATHING, items[0].suggested_reminder_types)
+        self.assertNotIn(ReminderType.BRUSHING, items[0].suggested_reminder_types)
+
+    def test_recent_generic_grooming_record_covers_every_label(self) -> None:
+        request = self._routine_care_request(
+            [WellnessRoutineCareEntry(type=ReminderType.GROOMING, last_done_at="2026-07-10")]
+        )
+
+        self.assertEqual(self._routine_care_item(request), [])
+
+    def test_fully_recorded_routine_care_produces_no_suggestion(self) -> None:
+        request = self._routine_care_request(
+            [
+                WellnessRoutineCareEntry(type=reminder_type, last_done_at="2026-07-25")
+                for reminder_type in _ROUTINE_CARE_TYPES
+            ]
+        )
+
+        self.assertEqual(self._routine_care_item(request), [])

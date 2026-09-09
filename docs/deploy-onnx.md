@@ -19,7 +19,7 @@ source .venv/bin/activate
 # torch.int4 and crash with torch<2.6 (which is what the .venv has).
 pip install "optimum[exporters]" "onnxruntime==1.19.2"
 
-python -m app.ml.export_onnx \
+python -m ml_pipeline.export_onnx \
   --model-dir models/transformer_model \
   --output-dir models/transformer_model_onnx
 ```
@@ -51,10 +51,10 @@ backend and compare to torch:
 
 ```bash
 # torch baseline
-python -m app.ml.evaluate --backend torch --model-dir models/transformer_model --data data/owner_eval.parquet
+python -m ml_pipeline.evaluate --backend torch --model-dir models/transformer_model --data data/owner_eval.parquet
 # onnx (the quantized model) — note --backend onnx
 pip install onnxruntime==1.19.2 tokenizers==0.19.1   # if not already present
-python -m app.ml.evaluate --backend onnx --model-dir models/transformer_model_onnx --data data/owner_eval.parquet
+python -m ml_pipeline.evaluate --backend onnx --model-dir models/transformer_model_onnx --data data/owner_eval.parquet
 ```
 
 Top-1 accuracy should be within ~1% of torch. If it isn't, re-export with

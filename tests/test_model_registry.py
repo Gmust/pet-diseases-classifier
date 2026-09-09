@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.ml.model_registry import (
+from app.inference.model_registry import (
     MANIFEST_NAME,
     publish_bundle,
     release_version,
@@ -11,7 +11,7 @@ from app.ml.model_registry import (
     verify_release_manifest,
     write_channel_metadata,
 )
-from app.ml.model_validation import ModelValidationError
+from app.inference.model_validation import ModelValidationError
 
 
 def _bundle(path: Path, content: str = "weights") -> Path:

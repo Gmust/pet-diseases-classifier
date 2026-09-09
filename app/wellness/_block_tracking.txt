@@ -1,0 +1,91 @@
+class _TrackingSpec(NamedTuple):
+    """What a dimension needs tracked, and how to phrase it in either context."""
+
+    required_inputs: tuple[str, ...]
+    reminder_types: tuple[ReminderType, ...]
+    gap_text: str
+    # Absent when the dimension has no meaningful "keep it up" nudge.
+    maintenance_text: str | None = None
+
+
+_TRACKING_SPECS: dict[WellnessDimension, _TrackingSpec] = {
+    WellnessDimension.ACTIVITY: _TrackingSpec(
+        required_inputs=("activity.avgStepsPerDay", "activity.avgActiveMinutesPerDay"),
+        reminder_types=(ReminderType.ACTIVITY,),
+        gap_text="Track daily steps or active minutes to include activity in the wellness score.",
+        maintenance_text="Keep tracking daily activity to maintain reliable wellness trends.",
+    ),
+    WellnessDimension.SLEEP: _TrackingSpec(
+        required_inputs=("activity.avgSleepHoursPerDay",),
+        reminder_types=(),
+        gap_text="Track daily sleep duration to include sleep in the wellness score.",
+    ),
+    WellnessDimension.DIET: _TrackingSpec(
+        required_inputs=("feeding.avgMealsPerDay", "feeding.consistencyDays"),
+        reminder_types=(ReminderType.FEEDING,),
+        gap_text="Track meal frequency and feeding consistency to include diet in the wellness score.",
+        maintenance_text="Keep logging meals consistently to maintain reliable wellness trends.",
+    ),
+    WellnessDimension.PREVENTIVE_CARE: _TrackingSpec(
+        required_inputs=(
+            "preventiveCare.vaccinationsUpToDate",
+            "preventiveCare.recentVetVisit",
+        ),
+        reminder_types=(ReminderType.VACCINATION, ReminderType.VET_VISIT),
+        gap_text="Record vaccination and recent veterinary-visit status to include preventive care.",
+        maintenance_text="Keep vaccination and veterinary-visit records current for reliable wellness trends.",
+    ),
+    WellnessDimension.BASELINE: _TrackingSpec(
+        required_inputs=("pet.ageMonths", "weightHistory"),
+        reminder_types=(),
+        gap_text="Record age and at least two weight measurements to establish a wellness baseline.",
+    ),
+}
+
+
+def _get_tracking_recommendations(
+    breakdown: WellnessBreakdown,
+) -> list[WellnessTrackingRecommendation]:
+    """Tell the owner which untracked dimensions are holding the score back."""
+    return [
+        WellnessTrackingRecommendation(
+            dimension=dimension,
+            text=spec.gap_text,
+            required_inputs=list(spec.required_inputs),
+            suggested_reminder_types=list(spec.reminder_types),
+        )
+        for dimension, item in _dimension_items(breakdown)
+        if item.availability == WellnessDimensionAvailability.MISSING
+        and (spec := _TRACKING_SPECS.get(dimension)) is not None
+    ]
+
+
+def _get_maintenance_tracking_recommendations(
+    breakdown: WellnessBreakdown,
+    reminders: list[WellnessReminder],
+) -> list[WellnessTrackingRecommendation]:
+    """Nudge the owner to keep up tracking that no reminder already covers."""
+    reminder_types_in_use = {item.reminder for item in reminders}
+    recommendations: list[WellnessTrackingRecommendation] = []
+
+    for dimension, item in _dimension_items(breakdown):
+        spec = _TRACKING_SPECS.get(dimension)
+        if not item.included or spec is None or spec.maintenance_text is None:
+            continue
+        available_suggestions = [
+            reminder_type
+            for reminder_type in spec.reminder_types
+            if reminder_type not in reminder_types_in_use
+        ]
+        if not available_suggestions:
+            continue
+        recommendations.append(
+            WellnessTrackingRecommendation(
+                dimension=dimension,
+                text=spec.maintenance_text,
+                required_inputs=list(spec.required_inputs),
+                suggested_reminder_types=available_suggestions,
+            )
+        )
+
+    return recommendations

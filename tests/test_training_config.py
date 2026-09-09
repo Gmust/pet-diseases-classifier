@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.ml.training_config import TrainingConfig
+from ml_pipeline.training_config import TrainingConfig
 
 
 def test_defaults_are_valid():

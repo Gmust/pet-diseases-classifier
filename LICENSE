@@ -1,0 +1,34 @@
+Smart Pet Care App — Copyright Notice and Terms of Use
+
+Copyright (c) the respective authors of their individual contributions.
+
+This repository is a component of Smart Pet Care App, a collaborative student diploma
+project. It is not released under an open-source licence.
+
+1. Ownership
+   Copyright in the materials of this repository remains with the respective authors of
+   their individual contributions. Nothing in this notice transfers copyright between
+   contributors or to any other party.
+
+2. All rights reserved
+   All rights are reserved except where rights are expressly granted in writing.
+
+3. No public licence
+   The fact that this repository is publicly visible does not by itself grant any third
+   party permission to copy, redistribute, publish, sell, sublicense, or create derivative
+   works from these materials, or to use them in other projects. Viewing the repository and
+   uses permitted by applicable law (such as quotation or other statutory exceptions) are
+   not affected. Requests for other uses should be directed to the authors.
+
+4. Rights between contributors
+   Rights granted between the participating contributors of Smart Pet Care App — including
+   the licence that allows the project to be maintained, demonstrated and further developed
+   — are described in PROJECT_AGREEMENT.md (maintained in the canonical project repository, https://github.com/Gmust/smart-pet-care-app).
+
+   That Agreement applies to an individual contributor only after that contributor has
+   explicitly accepted it. This notice does not state or imply that every contributor has
+   accepted it.
+
+5. Third-party components
+   Third-party libraries, frameworks, datasets, models, fonts and other dependencies remain
+   subject to their own licences, which are not affected by this notice.

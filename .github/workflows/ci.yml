@@ -37,30 +37,14 @@ jobs:
       - name: Validate AWS SAM template
         run: sam validate --lint --template-file template.yaml
 
-      - name: Run fast tests with coverage gate
+      # Coverage scope comes from [tool.coverage.run] in pyproject.toml: the whole
+      # `app` package minus the two modules that cannot run offline. A new module
+      # is therefore gated by default, instead of only when someone remembers to
+      # add a --cov= line here.
+      - name: Run test suite with coverage gate
         run: >-
           uv run --frozen pytest -q
-          tests/test_api.py tests/test_units.py
-          --cov=app.main
-          --cov=app.schemas
-          --cov=app.config
-          --cov=app.app_services
-          --cov=app.services.chat_context
-          --cov=app.services.triage_safety
-          --cov=app.services.advice_safety
-          --cov=app.services.generation_policy
-          --cov=app.ml.condition_metadata
-          --cov=app.ml.protocols
-          --cov=app.ml.model_validation
-          --cov=app.use_cases.predict
-          --cov=app.use_cases.chat
-          --cov=app.use_cases.wellness
-          --cov=app.use_cases.errors
-          --cov-report=term-missing
-          --cov-fail-under=85
-
-      - name: Run complete lightweight test suite
-        run: uv run --frozen pytest -q
+          --cov --cov-report=term-missing --cov-fail-under=85
 
   data:
     runs-on: ubuntu-latest

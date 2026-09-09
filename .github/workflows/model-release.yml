@@ -45,12 +45,12 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ inputs.model_version }}
         run: |
-          uv run --frozen python -m app.ml.model_registry models/transformer_model
-          uv run --frozen python -m app.ml.model_registry models/transformer_model_onnx
+          uv run --frozen python -m app.inference.model_registry models/transformer_model
+          uv run --frozen python -m app.inference.model_registry models/transformer_model_onnx
           uv run --frozen python - <<'PY'
           import os
           from pathlib import Path
-          from app.ml.model_registry import release_version
+          from app.inference.model_registry import release_version
           versions = {
               release_version(Path("models/transformer_model")),
               release_version(Path("models/transformer_model_onnx")),
@@ -71,7 +71,7 @@ jobs:
               raise SystemExit(f"Model workflow unexpectedly skipped {skipped} test(s)")
           PY
       - name: Deterministic safety gate
-        run: uv run --frozen python -m app.ml.release_gates safety --output-json release-safety.json
+        run: uv run --frozen python -m ml_pipeline.release_gates safety --output-json release-safety.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: safety-evidence-${{ inputs.model_version }}
@@ -95,7 +95,7 @@ jobs:
       - run: python -m pip install uv==${UV_VERSION}
       - run: uv sync --frozen --extra dev --extra torch-runtime --extra onnx-runtime
       - name: Torch/ONNX release parity
-        run: uv run --frozen python -m app.ml.release_gates parity --output-json release-parity.json
+        run: uv run --frozen python -m ml_pipeline.release_gates parity --output-json release-parity.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: parity-evidence-${{ inputs.model_version }}

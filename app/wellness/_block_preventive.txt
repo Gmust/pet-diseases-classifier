@@ -1,0 +1,49 @@
+def _score_preventive(
+    care: WellnessPreventiveCare | None,
+    adherence: float | None,
+) -> WellnessBreakdownItem:
+    MAX = 10.0
+    earned = 0.0
+    possible = 0.0
+
+    if care is not None:
+        possible += 8
+        if care.recent_vet_visit:
+            earned += 4
+        if care.vaccinations_up_to_date:
+            earned += 4
+
+    if adherence is not None:
+        # Adherence is always worth 20% of this dimension. If it is the only
+        # available preventive input, keep the unobserved care portion at zero
+        # instead of normalizing adherence from 2 points up to all 10.
+        possible += 2 if care is not None else MAX
+        earned += adherence * 2
+
+    if possible == 0:
+        return _breakdown_item(
+            score=0,
+            max_score=MAX,
+            availability=WellnessDimensionAvailability.MISSING,
+            reason_codes=[WellnessReasonCode.PREVENTIVE_CARE_DATA_MISSING],
+        )
+
+    scaled = (earned / possible) * MAX
+    reason = (
+        WellnessReasonCode.PREVENTIVE_CARE_CURRENT
+        if scaled / MAX >= 0.9
+        else WellnessReasonCode.PREVENTIVE_CARE_NEEDS_ATTENTION
+    )
+    evidence: dict[str, bool | int | float | str] = {}
+    if care is not None:
+        evidence["recentVetVisit"] = care.recent_vet_visit
+        evidence["vaccinationsUpToDate"] = care.vaccinations_up_to_date
+    if adherence is not None:
+        evidence["medicationAdherence"] = round(adherence, 4)
+    return _breakdown_item(
+        score=round(scaled, 1),
+        max_score=MAX,
+        availability=WellnessDimensionAvailability.AVAILABLE,
+        reason_codes=[reason],
+        evidence=evidence,
+    )

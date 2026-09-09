@@ -7,8 +7,8 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from app.ml.dataset_schema import CANONICAL_LABELS  # noqa: E402
-from app.ml.eval_coverage import (  # noqa: E402
+from ml_pipeline.dataset_schema import CANONICAL_LABELS  # noqa: E402
+from ml_pipeline.eval_coverage import (  # noqa: E402
     EvaluationCoverageError,
     build_coverage_report,
     check_class_coverage,

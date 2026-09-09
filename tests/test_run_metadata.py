@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from app.ml.run_metadata import (
+from ml_pipeline.run_metadata import (
     build_run_metadata,
     file_fingerprint,
     git_commit,

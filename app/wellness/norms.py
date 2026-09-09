@@ -1,0 +1,133 @@
+"""Species norms, scoring constants, and the two numeric helpers they feed.
+
+Pure data. Kept apart from the scorers so a vet-driven tweak to a target
+range is a one-file change that never touches scoring logic."""
+
+from __future__ import annotations
+
+import logging
+
+from app.domain.enums import UrgencyLevel
+from app.wellness.schemas import WellnessBand, WellnessDimension
+
+logger = logging.getLogger(__name__)
+
+
+WELLNESS_DISCLAIMER = (
+    "This wellness indicator is based on tracked activity, feeding, and care data. "
+    "It is not a clinical assessment and does not replace a veterinary examination."
+)
+CALCULATION_VERSION = "2.0.0"
+MIN_SCORE_DATA_COVERAGE = 0.60
+# Dimensions the reliability gate counts before a score is considered trustworthy.
+_FOUNDATIONAL_DIMENSIONS = (
+    WellnessDimension.ACTIVITY,
+    WellnessDimension.SLEEP,
+    WellnessDimension.DIET,
+    WellnessDimension.PREVENTIVE_CARE,
+    WellnessDimension.BASELINE,
+)
+INSUFFICIENT_DATA_NARRATIVE = (
+    "There is not enough tracked data to calculate a wellness score yet. "
+    "Record the suggested activity, feeding, preventive-care, or baseline details "
+    "and request a new assessment."
+)
+
+# ── Species-specific norms ─────────────────────────────────────────────────
+
+_ACTIVITY_TARGETS: dict[str, dict] = {
+    "dog": {"steps": 8000, "active_min": 45},
+    "cat": {"steps": 1500, "active_min": 20},
+    "rabbit": {"steps": 0, "active_min": 30},
+    "hamster": {"steps": 0, "active_min": 20},
+    "guinea_pig": {"steps": 0, "active_min": 25},
+    "bird": {"steps": 0, "active_min": 15},
+    "fish": {"steps": 0, "active_min": 0},
+    "turtle": {"steps": 0, "active_min": 10},
+}
+_DEFAULT_ACTIVITY = {"steps": 5000, "active_min": 30}
+
+# (min_hours, max_hours) of healthy sleep per day; None = dimension not applicable
+_SLEEP_NORMS: dict[str, tuple[float, float] | None] = {
+    "dog": (12.0, 14.0),
+    "cat": (13.0, 16.0),
+    "rabbit": (8.0, 10.0),
+    "hamster": (12.0, 14.0),
+    "guinea_pig": (10.0, 12.0),
+    "bird": (10.0, 12.0),
+    "fish": None,
+    "turtle": (12.0, 16.0),
+}
+_DEFAULT_SLEEP = (11.0, 14.0)
+
+# Rough daily calorie target per kg of body weight (adult)
+_KCAL_PER_KG: dict[str, float] = {
+    "dog": 35.0,
+    "cat": 45.0,
+    "rabbit": 50.0,
+    "hamster": 120.0,
+    "guinea_pig": 60.0,
+    "bird": 80.0,
+    "fish": 0.0,
+    "turtle": 20.0,
+}
+_DEFAULT_KCAL_PER_KG = 40.0
+
+# Urgency → base symptom score (out of 25)
+_URGENCY_BASE_SCORE: dict[UrgencyLevel, float] = {
+    UrgencyLevel.EMERGENCY: 2.0,
+    UrgencyLevel.URGENT: 9.0,
+    UrgencyLevel.CONSULT_SOON: 15.0,
+    UrgencyLevel.MONITOR: 21.0,
+}
+
+# Condition severity → maximum possible wellness score
+_CONDITION_CAP_KEYWORDS: list[tuple[list[str], int]] = [
+    # (keywords_to_match_in_name, cap)
+    (
+        [
+            "cancer",
+            "tumor",
+            "tumour",
+            "lymphoma",
+            "leukemia",
+            "carcinoma",
+            "sarcoma",
+            "heart failure",
+            "congestive",
+        ],
+        65,
+    ),
+    (
+        [
+            "diabetes",
+            "kidney",
+            "renal",
+            "liver",
+            "hepatic",
+            "epilepsy",
+            "cushings",
+            "addisons",
+            "pancreatitis",
+            "inflammatory bowel",
+        ],
+        75,
+    ),
+    (["arthritis", "allergy", "dermatitis", "thyroid", "asthma", "hip dysplasia", "luxating"], 85),
+]
+
+_BAND_LABELS: dict[WellnessBand, str] = {
+    WellnessBand.EXCELLENT: "Excellent",
+    WellnessBand.GOOD: "Good",
+    WellnessBand.FAIR: "Fair",
+    WellnessBand.CONCERNING: "Concerning",
+    WellnessBand.CRITICAL: "Critical",
+}
+
+
+def _norm(species: str) -> str:
+    return species.lower().strip()
+
+
+def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, value))

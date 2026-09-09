@@ -7,8 +7,8 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from app.ml.dataset_schema import assign_row_ids  # noqa: E402
-from app.ml.split_manifest import (  # noqa: E402
+from ml_pipeline.dataset_schema import assign_row_ids  # noqa: E402
+from ml_pipeline.split_manifest import (  # noqa: E402
     SplitLeakageError,
     build_split_manifest,
     duplicate_family_key,

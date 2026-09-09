@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.ml.calibration import (
+from ml_pipeline.calibration import (
     build_abstention_policy,
     compute_selective_accuracy_curve,
     find_threshold_for_target_accuracy,

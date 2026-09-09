@@ -36,7 +36,7 @@ COPY app/ ./app/
 
 # Fine-tuned model (HuggingFace format, produced by app/ml/train.py)
 COPY models/transformer_model/ ./models/transformer_model/
-RUN python -m app.ml.model_registry /var/task/models/transformer_model
+RUN python -m app.inference.model_registry /var/task/models/transformer_model
 
 COPY .env.example .env.example
 

@@ -14,4 +14,4 @@ Use these maintained sources instead:
 
 The current local ONNX candidate is not promotable because the strict parity
 gate fails; see `docs/baseline-2026-07-07.md` and run
-`python -m app.ml.release_gates parity` for fresh evidence.
+`python -m ml_pipeline.release_gates parity` for fresh evidence.

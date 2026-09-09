@@ -1,0 +1,33 @@
+class _WellnessNarrative(BaseModel):
+    narrative: str = Field(
+        ...,
+        min_length=1,
+        description="A short, mobile-friendly summary — 1-2 sentences, max ~35 words.",
+    )
+    recommendations: list[str] = Field(default_factory=list)
+
+
+# Mobile cards have limited room — keep the narrative to ~2 sentences.
+_NARRATIVE_MAX_SENTENCES = 2
+_NARRATIVE_MAX_CHARS = 240
+
+
+def _shorten_narrative(text: str) -> str:
+    """Hard guard so the narrative stays mobile-friendly regardless of the model.
+
+    Keeps the first couple of sentences and caps total length. Never fails — just
+    trims. Recommendations carry the detail, so trimming the narrative is safe.
+    """
+    text = " ".join(text.split()).strip()
+    # Keep the first N sentence-ending segments.
+    parts, out = text.replace("! ", ". ").replace("? ", ". ").split(". "), []
+    for count, part in enumerate(parts, start=1):
+        out.append(part)
+        if count >= _NARRATIVE_MAX_SENTENCES:
+            break
+    short = ". ".join(p.rstrip(".") for p in out).strip()
+    if short and not short.endswith((".", "!", "?")):
+        short += "."
+    if len(short) > _NARRATIVE_MAX_CHARS:
+        short = short[:_NARRATIVE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return short

@@ -60,7 +60,7 @@ pytestmark = pytest.mark.skipif(
 def predictor():
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
-    from app.ml.predictor import Predictor
+    from app.inference.predictor import Predictor
 
     return Predictor.from_paths(model_path=MODEL_PATH)
 

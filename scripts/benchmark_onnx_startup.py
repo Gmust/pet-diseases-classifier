@@ -18,7 +18,7 @@ import resource
 import platform
 import sys
 import time
-from app.ml.onnx_predictor import OnnxPredictor
+from app.inference.onnx_predictor import OnnxPredictor
 start = time.perf_counter()
 predictor = OnnxPredictor.from_paths(sys.argv[1])
 elapsed = (time.perf_counter() - start) * 1000
