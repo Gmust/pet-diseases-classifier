@@ -79,7 +79,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "ml_pipeline*"]
 
 [tool.black]
 line-length = 100
@@ -88,7 +88,7 @@ target-version = ["py311", "py312"]
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["app"]
+known_first_party = ["app", "ml_pipeline"]
 
 [tool.ruff]
 line-length = 100
@@ -150,7 +150,16 @@ filterwarnings = [
 [tool.coverage.run]
 branch = true
 source = ["app"]
-omit = ["app/ml/train.py"]
+# Only modules that cannot execute in the offline test suite are omitted:
+# onnx_predictor needs onnxruntime plus an exported model dir, and
+# lambda_handler needs a real Lambda invocation event. Everything else in
+# `app` is gated, so a new module is covered by default rather than having to
+# be added to an allowlist.
+omit = [
+    "app/inference/onnx_predictor.py",
+    "app/lambda_handler.py",
+    "ml_pipeline/*",
+]
 
 [tool.coverage.report]
 fail_under = 85

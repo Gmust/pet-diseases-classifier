@@ -200,11 +200,23 @@ The service SHALL return deterministic `trackingRecommendations` for actionable 
 - **THEN** `suggestedReminderTypes` SHALL equal `["Feeding"]`
 - **WHEN** PreventiveCare tracking guidance is returned
 - **THEN** `suggestedReminderTypes` SHALL equal `["Vaccination", "VetVisit"]`
+- **WHEN** Baseline tracking guidance is returned
+- **THEN** `suggestedReminderTypes` SHALL equal `["Weighing"]`
 
 #### Scenario: No compatible backend reminder type
-- **WHEN** missing-data Sleep or Baseline tracking guidance is returned
+- **WHEN** missing-data Sleep tracking guidance is returned
 - **THEN** `suggestedReminderTypes` SHALL be empty
 - **AND** Sleep and Baseline SHALL NOT produce complete-state maintenance guidance
+
+#### Scenario: Routine grooming care with no recent record
+- **WHEN** the request contains no `routineCare` record for a grooming activity, or the record's `lastDoneAt` is more than 30 days before the evaluated period's end
+- **THEN** `trackingRecommendations` SHALL contain one `RoutineCare` item whose `suggestedReminderTypes` are the grooming reminder types with no recent record
+- **AND** the item SHALL NOT suggest `Deworming`, `ParasiteTreatment`, or `Medication`
+- **AND** `RoutineCare` SHALL NOT affect `wellnessScore`, `dataCoverage`, or `scoreStatus`
+
+#### Scenario: Recent grooming record suppresses the suggestion
+- **WHEN** an unspecified `Grooming` record is within 30 days, or every grooming activity has a record within 30 days
+- **THEN** no `RoutineCare` tracking recommendation SHALL be returned
 
 #### Scenario: Suggestions require user confirmation
 - **WHEN** any `suggestedReminderTypes` are returned

@@ -5,7 +5,7 @@
 2. Retrieve and verify that version:
 
    ```bash
-   python -m app.ml.model_registry /path/to/registry/releases/<rollback-version>
+   python -m app.inference.model_registry /path/to/registry/releases/<rollback-version>
    ```
 
 3. Redeploy the image digest previously recorded for that immutable version, or

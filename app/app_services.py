@@ -1,7 +1,7 @@
 """
 Runtime service container.
 
-Split out from `app.main` so application use cases (`app.use_cases.*`) can
+Split out from `app.main` so application use cases (`app.triage.*`, `app.wellness.*`, `app.feeding.*`) can
 type-hint against it without importing the FastAPI app module and creating a
 circular import.
 """
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.ml.protocols import Classifier
-from app.services.gemini_service import GeminiService
-from app.services.wellness_service import WellnessService
+from app.inference.protocols import Classifier
+from app.llm.gemini_service import GeminiService
+from app.wellness.service import WellnessService
 
 
 @dataclass

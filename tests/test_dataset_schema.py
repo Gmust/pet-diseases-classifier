@@ -7,7 +7,7 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from app.ml.dataset_schema import (  # noqa: E402
+from ml_pipeline.dataset_schema import (  # noqa: E402
     DatasetValidationError,
     assign_row_ids,
     compute_row_id,

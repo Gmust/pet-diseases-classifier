@@ -7,25 +7,25 @@ import json
 
 import pytest
 
-from app.ml.condition_metadata import (
+from app.domain.conditions import (
     CONDITION_METADATA,
     build_static_explanation,
     get_condition_metadata,
 )
-from app.ml.model_validation import (
+from app.domain.enums import UrgencyLevel
+from app.inference.model_validation import (
     ModelValidationError,
     validate_id2label,
     validate_required_files,
     validate_top_k,
     verify_checksums,
 )
-from app.schemas import ChatMessage, ChatRole, UrgencyLevel
-from app.services.chat_context import (
+from app.triage.context import (
     build_classifier_input,
     build_safety_context,
     latest_user_message,
 )
-from app.services.triage_safety import (
+from app.triage.safety import (
     ABSTAIN_THRESHOLD,
     EMERGENCY_HOME_ADVICE,
     apply_red_flag_urgency,
@@ -33,6 +33,7 @@ from app.services.triage_safety import (
     emergency_explanation,
     should_abstain,
 )
+from app.triage.schemas import ChatMessage, ChatRole
 
 # --- triage_safety ----------------------------------------------------------
 
@@ -152,12 +153,10 @@ def test_static_explanation_is_cautious_and_mentions_condition():
 
 
 def test_wellness_missing_dimensions_are_explicit_and_excluded():
-    from app.schemas import WellnessDimensionAvailability, WellnessPet
-    from app.services.wellness_service import (
-        _score_baseline,
-        _score_diet,
-        _score_preventive,
-    )
+    from app.wellness.schemas import WellnessDimensionAvailability, WellnessPet
+    from app.wellness.scoring.baseline import _score_baseline
+    from app.wellness.scoring.diet import _score_diet
+    from app.wellness.scoring.preventive import _score_preventive
 
     items = (
         _score_diet(None, WellnessPet(species="dog")),
@@ -171,17 +170,16 @@ def test_wellness_missing_dimensions_are_explicit_and_excluded():
 
 
 def test_narrative_prompt_marks_missing_dimensions_not_tracked():
-    from app.schemas import (
+    from app.wellness.prompt import _build_narrative_prompt
+    from app.wellness.responses import WellnessBreakdown, WellnessBreakdownItem
+    from app.wellness.schemas import (
         WellnessBand,
-        WellnessBreakdown,
-        WellnessBreakdownItem,
         WellnessDimensionAvailability,
         WellnessPet,
         WellnessReasonCode,
         WellnessRequest,
         WellnessScoreStatus,
     )
-    from app.services.wellness_service import _build_narrative_prompt
 
     def item(score, mx, availability, reason):
         return WellnessBreakdownItem(
@@ -193,12 +191,30 @@ def test_narrative_prompt_marks_missing_dimensions_not_tracked():
         )
 
     breakdown = WellnessBreakdown(
-        activity=item(20, 20, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.ACTIVITY_TARGET_MET),
-        sleep=item(8, 15, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.SLEEP_WITHIN_RANGE),
-        diet=item(0, 20, WellnessDimensionAvailability.MISSING, WellnessReasonCode.DIET_DATA_MISSING),
-        symptoms=item(20, 25, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.SYMPTOM_RESULT_AVAILABLE),
-        preventive_care=item(0, 10, WellnessDimensionAvailability.MISSING, WellnessReasonCode.PREVENTIVE_CARE_DATA_MISSING),
-        baseline=item(10, 10, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.BASELINE_STABLE),
+        activity=item(
+            20, 20, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.ACTIVITY_TARGET_MET
+        ),
+        sleep=item(
+            8, 15, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.SLEEP_WITHIN_RANGE
+        ),
+        diet=item(
+            0, 20, WellnessDimensionAvailability.MISSING, WellnessReasonCode.DIET_DATA_MISSING
+        ),
+        symptoms=item(
+            20,
+            25,
+            WellnessDimensionAvailability.AVAILABLE,
+            WellnessReasonCode.SYMPTOM_RESULT_AVAILABLE,
+        ),
+        preventive_care=item(
+            0,
+            10,
+            WellnessDimensionAvailability.MISSING,
+            WellnessReasonCode.PREVENTIVE_CARE_DATA_MISSING,
+        ),
+        baseline=item(
+            10, 10, WellnessDimensionAvailability.AVAILABLE, WellnessReasonCode.BASELINE_STABLE
+        ),
     )
     req = WellnessRequest(pet=WellnessPet(species="dog", weightKg=20))
     prompt = _build_narrative_prompt(
@@ -223,10 +239,7 @@ def test_narrative_prompt_marks_missing_dimensions_not_tracked():
 
 
 def test_wellness_narrative_is_trimmed_for_mobile():
-    from app.services.wellness_service import (
-        _NARRATIVE_MAX_CHARS,
-        _shorten_narrative,
-    )
+    from app.wellness.prompt import _NARRATIVE_MAX_CHARS, _shorten_narrative
 
     long_text = (
         "Your Labrador is doing wonderfully this week, maintaining a great overall "
@@ -330,7 +343,7 @@ def test_verify_checksums_fails_on_mismatch(tmp_path):
 
 
 def test_call_with_policy_returns_result_on_success():
-    from app.services.generation_policy import call_with_policy
+    from app.llm.generation_policy import call_with_policy
 
     assert call_with_policy(lambda: 42) == 42
 
@@ -338,7 +351,7 @@ def test_call_with_policy_returns_result_on_success():
 def test_call_with_policy_raises_timeout_error_when_slow():
     import time
 
-    from app.services.generation_policy import GenerationTimeoutError, call_with_policy
+    from app.llm.generation_policy import GenerationTimeoutError, call_with_policy
 
     started = time.perf_counter()
     with pytest.raises(GenerationTimeoutError):
@@ -347,7 +360,7 @@ def test_call_with_policy_raises_timeout_error_when_slow():
 
 
 def test_call_with_policy_retries_transient_errors_then_succeeds():
-    from app.services.generation_policy import call_with_policy
+    from app.llm.generation_policy import call_with_policy
 
     calls = {"count": 0}
 
@@ -362,7 +375,7 @@ def test_call_with_policy_retries_transient_errors_then_succeeds():
 
 
 def test_call_with_policy_raises_after_exhausting_retries():
-    from app.services.generation_policy import call_with_policy
+    from app.llm.generation_policy import call_with_policy
 
     def always_fails():
         raise RuntimeError("still broken")
@@ -372,14 +385,14 @@ def test_call_with_policy_raises_after_exhausting_retries():
 
 
 def test_bound_prompt_truncates_long_text():
-    from app.services.generation_policy import bound_prompt
+    from app.llm.generation_policy import bound_prompt
 
     assert bound_prompt("x" * 100, max_chars=10) == "x" * 10
     assert bound_prompt("short", max_chars=10) == "short"
 
 
 def test_bounded_chat_transcript_drops_oldest_and_keeps_latest():
-    from app.services.gemini_service import _bounded_chat_transcript
+    from app.llm.gemini_service import _bounded_chat_transcript
 
     conversation = [
         {"role": "user", "content": "old" * 100},
@@ -395,8 +408,8 @@ def test_bounded_chat_transcript_drops_oldest_and_keeps_latest():
 def test_chat_generation_prompt_retains_latest_message():
     from types import SimpleNamespace
 
-    from app.services.gemini_service import GeminiService
-    from app.services.generation_policy import MAX_PROMPT_CHARS
+    from app.llm.gemini_service import GeminiService
+    from app.llm.generation_policy import MAX_PROMPT_CHARS
 
     captured: dict[str, str] = {}
 
@@ -445,7 +458,7 @@ def test_chat_generation_prompt_retains_latest_message():
     ],
 )
 def test_is_advice_item_safe_rejects_unsafe_or_malformed_items(item):
-    from app.services.advice_safety import is_advice_item_safe
+    from app.triage.advice import is_advice_item_safe
 
     assert is_advice_item_safe(item) is False
 
@@ -460,13 +473,13 @@ def test_is_advice_item_safe_rejects_unsafe_or_malformed_items(item):
     ],
 )
 def test_is_advice_item_safe_accepts_general_care_tips(item):
-    from app.services.advice_safety import is_advice_item_safe
+    from app.triage.advice import is_advice_item_safe
 
     assert is_advice_item_safe(item) is True
 
 
 def test_sanitize_advice_drops_unsafe_items_and_keeps_safe_ones():
-    from app.services.advice_safety import sanitize_advice
+    from app.triage.advice import sanitize_advice
 
     items = ["Give 5mg of medicine.", "Ensure fresh water is available."]
     result = sanitize_advice(items, fallback=["fallback tip"], source="test")
@@ -474,7 +487,7 @@ def test_sanitize_advice_drops_unsafe_items_and_keeps_safe_ones():
 
 
 def test_sanitize_advice_falls_back_when_nothing_survives():
-    from app.services.advice_safety import sanitize_advice
+    from app.triage.advice import sanitize_advice
 
     items = ["Give 5mg of medicine.", ""]
     result = sanitize_advice(items, fallback=["fallback tip"], source="test")
@@ -482,7 +495,7 @@ def test_sanitize_advice_falls_back_when_nothing_survives():
 
 
 def test_sanitize_advice_caps_item_count():
-    from app.services.advice_safety import MAX_ADVICE_ITEMS, sanitize_advice
+    from app.triage.advice import MAX_ADVICE_ITEMS, sanitize_advice
 
     items = [f"Tip number {i} about general care." for i in range(MAX_ADVICE_ITEMS + 5)]
     result = sanitize_advice(items, fallback=["fallback"], source="test")
@@ -492,7 +505,7 @@ def test_sanitize_advice_caps_item_count():
 def test_all_static_condition_advice_passes_the_safety_filter():
     """Regression guard: catches an unsafe phrase accidentally added to the
     reviewed static advice table in condition_metadata.py."""
-    from app.services.advice_safety import is_advice_item_safe
+    from app.triage.advice import is_advice_item_safe
 
     for condition, meta in CONDITION_METADATA.items():
         for item in meta.home_advice:
@@ -513,7 +526,7 @@ def test_condition_metadata_exposes_honest_review_default():
 def test_rotating_client_advances_key_on_quota_exhaustion():
     from types import SimpleNamespace
 
-    from app.services.gemini_rotation import RotatingGeminiClient
+    from app.llm.rotation import RotatingGeminiClient
 
     class FakeClientError(Exception):
         def __init__(self, code: int):
@@ -530,7 +543,7 @@ def test_rotating_client_advances_key_on_quota_exhaustion():
                 raise FakeClientError(429)
             return f"ok-from-{self.api_key}"
 
-    import app.services.gemini_rotation as rotation_module
+    import app.llm.rotation as rotation_module
 
     fake_clients = {
         "key1": FakeClient("key1", fail=True),
@@ -550,7 +563,7 @@ def test_rotating_client_advances_key_on_quota_exhaustion():
 def test_rotating_client_raises_when_all_keys_exhausted():
     from types import SimpleNamespace
 
-    from app.services.gemini_rotation import RotatingGeminiClient
+    from app.llm.rotation import RotatingGeminiClient
 
     class FakeClientError(Exception):
         def __init__(self, code: int):
@@ -564,7 +577,7 @@ def test_rotating_client_raises_when_all_keys_exhausted():
         def generate_content(self, **kwargs):
             raise FakeClientError(429)
 
-    import app.services.gemini_rotation as rotation_module
+    import app.llm.rotation as rotation_module
 
     rotation_module.ClientError = FakeClientError
     rotation_module.genai = SimpleNamespace(Client=lambda api_key: FakeClient(api_key))
@@ -577,7 +590,7 @@ def test_rotating_client_raises_when_all_keys_exhausted():
 def test_rotating_client_reraises_non_quota_errors():
     from types import SimpleNamespace
 
-    from app.services.gemini_rotation import RotatingGeminiClient
+    from app.llm.rotation import RotatingGeminiClient
 
     class FakeClientError(Exception):
         def __init__(self, code: int):
@@ -591,7 +604,7 @@ def test_rotating_client_reraises_non_quota_errors():
         def generate_content(self, **kwargs):
             raise FakeClientError(500)
 
-    import app.services.gemini_rotation as rotation_module
+    import app.llm.rotation as rotation_module
 
     rotation_module.ClientError = FakeClientError
     rotation_module.genai = SimpleNamespace(Client=lambda api_key: FakeClient(api_key))

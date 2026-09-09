@@ -5,7 +5,7 @@
 #
 # Prerequisite: build the model dir first on a machine with the weights:
 #   pip install "optimum[onnxruntime]"
-#   python -m app.ml.export_onnx \
+#   python -m ml_pipeline.export_onnx \
 #       --model-dir models/transformer_model \
 #       --output-dir models/transformer_model_onnx
 #
@@ -34,7 +34,7 @@ COPY app/ ./app/
 
 # Quantized ONNX model (produced by app/ml/export_onnx.py)
 COPY models/transformer_model_onnx/ ./models/transformer_model_onnx/
-RUN python -m app.ml.model_registry /var/task/models/transformer_model_onnx
+RUN python -m app.inference.model_registry /var/task/models/transformer_model_onnx
 
 COPY .env.example .env.example
 

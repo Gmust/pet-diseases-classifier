@@ -6,7 +6,8 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from app.ml.evaluation_report import (  # noqa: E402
+from app.inference.predictor import PredictionResult  # noqa: E402
+from ml_pipeline.evaluation_report import (  # noqa: E402
     EvaluationReportError,
     build_evaluation_report,
     compare_with_baseline,
@@ -14,7 +15,6 @@ from app.ml.evaluation_report import (  # noqa: E402
     regression_failures,
     write_evaluation_report,
 )
-from app.ml.predictor import PredictionResult  # noqa: E402
 
 LABELS = ["Digestive Issues", "Skin Conditions", "Ear Conditions"]
 

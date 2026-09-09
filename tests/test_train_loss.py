@@ -7,7 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from app.ml.train import FocalLoss  # noqa: E402
+from ml_pipeline.train import FocalLoss  # noqa: E402
 
 
 def test_focal_loss_matches_weighted_ce_when_gamma_is_zero():

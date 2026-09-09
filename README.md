@@ -317,6 +317,10 @@ Active chronic conditions cap the maximum possible score:
     "recentVetVisit": true,
     "vaccinationsUpToDate": true
   },
+  "routineCare": [
+    { "type": "Bathing", "lastDoneAt": "2026-07-20" },
+    { "type": "NailTrimming", "lastDoneAt": "2026-05-02" }
+  ],
   "evaluationWindow": {
     "startDate": "2026-07-24",
     "endDate": "2026-07-30"
@@ -541,7 +545,14 @@ exact `ReminderType` wire values. These values let the client offer a separate
 | Sleep | none — no matching backend type |
 | Diet | `Feeding` |
 | PreventiveCare | `Vaccination`, `VetVisit` |
-| Baseline | none — no matching backend type |
+| Baseline | `Weighing` |
+| RoutineCare | `Bathing`, `Brushing`, `NailTrimming`, `EarCleaning`, `PawCare`, `TeethCleaning` |
+
+`RoutineCare` is tracking-only — it is never scored and never changes `dataCoverage`.
+It is returned whenever the backend sends no `routineCare` record for a grooming
+activity, or the record is older than 30 days (anchored to `evaluationWindow.endDate`
+when provided, otherwise today). A recent unspecified `Grooming` record counts for
+every grooming label. `Deworming` and other parasite products are never suggested.
 
 The microservice does not create or schedule reminders and does not return repeat
 frequency, time, or notification settings. Those values must be collected by the
@@ -627,7 +638,7 @@ pip install -r requirements.txt -r requirements-train.txt
 ### Step 1 — Generate synthetic data for weak classes
 
 ```bash
-python -m app.ml.generate_synthetic --samples-per-class 100
+python -m ml_pipeline.generate_synthetic --samples-per-class 100
 ```
 
 Output: `data/synthetic_data.parquet`
@@ -635,7 +646,7 @@ Output: `data/synthetic_data.parquet`
 ### Step 2 — Merge all data sources
 
 ```bash
-python -m app.ml.fetch_and_merge
+python -m ml_pipeline.fetch_and_merge
 ```
 
 Combines: local base data + VetPetCare (free HF dataset) + synthetic data.
@@ -644,7 +655,7 @@ Output: `data/merged_augmented.parquet`
 ### Step 3 — Train
 
 ```bash
-python -m app.ml.train \
+python -m ml_pipeline.train \
   --data-path data/merged_augmented.parquet \
   --label-map data/label_map.json \
   --model-dir models/transformer_model \
@@ -658,7 +669,7 @@ python -m app.ml.train \
 
 **Optional upgrade — PetBERT** (gated, needs HuggingFace account):
 ```bash
-HF_TOKEN=hf_xxxx python -m app.ml.train \
+HF_TOKEN=hf_xxxx python -m ml_pipeline.train \
   --base-model SAVSNET/PetBERT \
   --epochs 8 --batch-size 16 --lr 1e-5
 ```

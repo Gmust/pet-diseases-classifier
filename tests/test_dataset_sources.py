@@ -7,7 +7,7 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from app.ml.dataset_sources import (  # noqa: E402
+from ml_pipeline.dataset_sources import (  # noqa: E402
     DatasetSourceError,
     SourceMode,
     load_source,

@@ -1,0 +1,122 @@
+_NARRATIVE_SYSTEM = """
+You are a veterinary wellness assistant generating a report for a pet owner.
+Given the pet details and wellness score breakdown, write:
+1. A SHORT narrative for a mobile app card: 1-2 sentences, max ~35 words total.
+   Name the weakest SCORED dimension in a few words. Encouraging, non-alarmist. No preamble.
+2. Up to 3 specific, actionable recommendations ordered by priority.
+   Be concrete — e.g. "Add 10 minutes to morning walks" not just "exercise more".
+   Put the detail HERE, not in the narrative.
+IMPORTANT: dimensions marked "not tracked (no data)" are MISSING data, NOT low scores.
+Never tell the owner to improve a not-tracked dimension. If a not-tracked dimension is
+important, you may gently suggest they START TRACKING it — but prioritise dimensions
+that were actually scored. Base the narrative's "weakest area" only on scored dimensions.
+Do not repeat categories handled by structured reminders.
+Do not provide medication, dosing, treatment, parasite-product, or supplement advice.
+Never suggest starting, stopping, changing, or administering a medicine.
+Return ONLY valid JSON matching the required schema.
+"""
+
+
+def _build_narrative_prompt(
+    request: WellnessRequest,
+    breakdown: WellnessBreakdown,
+    score: int,
+    band: WellnessBand,
+    score_status: WellnessScoreStatus,
+    data_coverage: float,
+    condition_cap: int | None,
+    detected_condition: str | None,
+    reminders: list[WellnessReminder],
+    stability: float | None,
+) -> str:
+    def format_item(item: WellnessBreakdownItem) -> str:
+        if not item.included:
+            return "not available"
+        return f"{item.score}/{item.max_score}"
+
+    lines = [
+        f"Pet: {request.pet.species}, {request.pet.breed or 'unknown breed'}, "
+        f"age {request.pet.age_months or '?'} months, weight {request.pet.weight_kg or '?'} kg",
+        f"Wellness score: {score}/100 ({band.value})",
+        f"Assessment status: {score_status.value}",
+        f"Weighted data coverage: {data_coverage:.2%}",
+        "Breakdown:",
+        f"  Activity:      {format_item(breakdown.activity)}",
+        f"  Sleep:         {format_item(breakdown.sleep)}",
+        f"  Diet:          {format_item(breakdown.diet)}",
+        f"  Symptoms:      {format_item(breakdown.symptoms)}",
+        f"  Preventive:    {format_item(breakdown.preventive_care)}",
+        f"  Baseline:      {format_item(breakdown.baseline)}",
+    ]
+    missing_dimensions = [
+        dimension.value
+        for dimension, item in _dimension_items(breakdown)
+        if item.availability == WellnessDimensionAvailability.MISSING
+    ]
+    if missing_dimensions:
+        lines.append(f"Missing dimensions: {', '.join(missing_dimensions)}")
+        lines.append("This is a partial assessment; do not describe it as complete.")
+    if detected_condition:
+        lines.append(f"Classifier detected: {detected_condition}")
+    if condition_cap is not None:
+        lines.append(f"Score capped at {condition_cap} due to active chronic condition.")
+    if request.active_conditions:
+        names = ", ".join(c.name for c in request.active_conditions)
+        lines.append(f"Active conditions: {names}")
+    if stability is not None:
+        lines.append(f"Weight stability score: {stability:.0%}")
+    if reminders:
+        handled = ", ".join(reminder.reminder.value for reminder in reminders)
+        lines.append(
+            f"Handled by structured reminders (do not repeat in recommendations): {handled}"
+        )
+    return "\n".join(lines)
+
+
+_FALLBACK_NARRATIVES: dict[WellnessBand, str] = {
+    WellnessBand.EXCELLENT: "Your pet is in excellent shape based on this week's tracked data. Keep up the great routine!",
+    WellnessBand.GOOD: "Your pet is doing well overall. There are a few small areas worth improving.",
+    WellnessBand.FAIR: "Your pet's wellness is fair. Some dimensions need attention — check the breakdown above.",
+    WellnessBand.CONCERNING: "Your pet's wellness is concerning this week. Consider reviewing diet, activity, and scheduling a vet check.",
+    WellnessBand.CRITICAL: "Your pet's tracked data indicates a critical wellness level. Please consult a veterinarian promptly.",
+}
+
+_FALLBACK_RECOMMENDATIONS: dict[WellnessBand, tuple[str, ...]] = {
+    WellnessBand.EXCELLENT: (
+        "Maintain the current routine.",
+        "Schedule a routine annual vet check.",
+    ),
+    WellnessBand.GOOD: (
+        "Review the dimension with the lowest sub-score.",
+        "Ensure consistent meal timing.",
+    ),
+    WellnessBand.FAIR: (
+        "Increase daily active time.",
+        "Log feeding more consistently.",
+        "Book a vet appointment if symptoms persist.",
+    ),
+    WellnessBand.CONCERNING: (
+        "Schedule a veterinary check-up soon.",
+        "Improve feeding consistency.",
+        "Increase monitored exercise.",
+    ),
+    WellnessBand.CRITICAL: (
+        "Contact a veterinarian as soon as possible.",
+        "Monitor symptoms closely.",
+        "Avoid strenuous activity until assessed.",
+    ),
+}
+
+
+def _fallback_narrative(
+    band: WellnessBand,
+    score_status: WellnessScoreStatus,
+    data_coverage: float,
+) -> tuple[str, list[str]]:
+    narrative = _FALLBACK_NARRATIVES[band]
+    if score_status == WellnessScoreStatus.PARTIAL:
+        narrative = (
+            f"This is a partial wellness assessment based on "
+            f"{data_coverage:.0%} weighted data coverage. {narrative}"
+        )
+    return narrative, list(_FALLBACK_RECOMMENDATIONS[band])

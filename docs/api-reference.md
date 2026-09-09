@@ -213,6 +213,7 @@ evidence.
 | `activeConditions[]` | array | `{ name, typeLabel? }` — active chronic conditions (cap the max score). |
 | `activeMedications[]` | array | `{ name, frequency? }`. |
 | `preventiveCare` | object | `{ recentVetVisit, vaccinationsUpToDate }`. |
+| `routineCare[]` | array | `{ type, lastDoneAt? }` — grooming-style care records keyed by backend `ReminderType`. Anything absent or older than 30 days comes back as a `RoutineCare` tracking suggestion. |
 | `currentSymptoms` | string | Optional free text — passed through the classifier. |
 | `previousScore` | int | 0–100. Used to compute `trend`. |
 
@@ -223,6 +224,7 @@ evidence.
   "feeding": { "avgMealsPerDay": 2, "consistencyDays": 7 },
   "activeConditions": [],
   "preventiveCare": { "recentVetVisit": true, "vaccinationsUpToDate": true },
+  "routineCare": [{ "type": "Bathing", "lastDoneAt": "2026-07-20" }],
   "previousScore": 82
 }
 ```

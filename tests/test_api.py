@@ -79,7 +79,7 @@ def test_predict_red_flag_forces_emergency(client, fake_predictor):
     assert body["urgency"] == "EMERGENCY"  # escalated by safety layer
     assert "⚠️" in body["explanation"]
     # Content override: emergency advice, NOT the predicted condition's advice.
-    from app.services.triage_safety import EMERGENCY_HOME_ADVICE
+    from app.triage.safety import EMERGENCY_HOME_ADVICE
 
     assert body["homeAdvice"] == EMERGENCY_HOME_ADVICE
     assert "withhold food" not in " ".join(body["homeAdvice"]).lower()  # no digestive advice
@@ -192,7 +192,7 @@ def test_chat_too_many_messages_rejected(client):
 
 
 def test_chat_red_flag_escalation(client):
-    from app.services.triage_safety import EMERGENCY_HOME_ADVICE
+    from app.triage.safety import EMERGENCY_HOME_ADVICE
 
     resp = client.post(
         "/chat",

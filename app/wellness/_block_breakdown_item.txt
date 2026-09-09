@@ -1,0 +1,16 @@
+def _breakdown_item(
+    *,
+    score: float,
+    max_score: float,
+    availability: WellnessDimensionAvailability,
+    reason_codes: list[WellnessReasonCode],
+    evidence: dict[str, bool | int | float | str] | None = None,
+) -> WellnessBreakdownItem:
+    return WellnessBreakdownItem(
+        score=score,
+        max_score=max_score,
+        availability=availability,
+        included=availability == WellnessDimensionAvailability.AVAILABLE,
+        reason_codes=reason_codes,
+        evidence=evidence or {},
+    )

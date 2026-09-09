@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from app.ml.release_docs import render_data_card, render_release_model_card
+from ml_pipeline.release_docs import render_data_card, render_release_model_card
 
 
 def main() -> None:

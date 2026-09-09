@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from unittest import TestCase
 
-from app.schemas import (
+from app.wellness.schemas import (
     ReminderType,
     WellnessActivity,
     WellnessFeeding,
@@ -12,7 +12,7 @@ from app.schemas import (
     WellnessScoreStatus,
     WellnessWeightMeasurement,
 )
-from app.services.wellness_service import WellnessService
+from app.wellness.service import WellnessService
 
 
 class _FakeGeminiResponse:
@@ -236,9 +236,7 @@ class WellnessServiceTests(TestCase):
             [reminder["reminder"] for reminder in payload["reminders"]],
             ["Feeding", "Activity", "Medication", "Vaccination", "VetVisit"],
         )
-        self.assertTrue(
-            all(reminder["text"] for reminder in payload["reminders"])
-        )
+        self.assertTrue(all(reminder["text"] for reminder in payload["reminders"]))
 
     def test_backend_camel_case_request_contract_validates(self) -> None:
         request = WellnessRequest.model_validate(
@@ -345,9 +343,7 @@ class WellnessServiceTests(TestCase):
 
         self.assertEqual(
             response.recommendations,
-            [
-                "Continue recording weight regularly and monitor the trend for further changes."
-            ],
+            ["Continue recording weight regularly and monitor the trend for further changes."],
         )
         self.assertEqual(
             [reminder.reminder for reminder in response.reminders],

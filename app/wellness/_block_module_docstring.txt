@@ -1,0 +1,21 @@
+"""
+Wellness scoring service.
+
+Architecture:
+  1. Rule-based scoring across 6 dimensions → raw score (0-100)
+  2. Condition cap applied if active chronic/serious conditions present
+  3. Gemini generates narrative + recommendations from the final scores
+  4. Trend computed by comparing to previousScore
+
+Scoring dimensions and max points:
+  Activity      20  (steps + active minutes vs species norms)
+  Sleep         15  (sleep hours vs species norms)
+  Diet          20  (meal consistency, food variety, calorie fit)
+  Symptoms      25  (classifier output if currentSymptoms provided)
+  Preventive    10  (vet visit + vaccinations + medication adherence)
+  Baseline      10  (weight stability + age appropriateness)
+  ─────────────────
+  Total        100
+
+Missing dimensions are marked included=false and omitted from score normalization.
+"""
