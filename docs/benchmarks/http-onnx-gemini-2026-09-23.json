@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-23T20:04:33.772593+00:00",
+  "label": "local M2, uvicorn 1 worker, ONNX int8 (production code, unpatched), LIVE Gemini gemini-2.5-flash-lite, sequential",
+  "base_url": "http://127.0.0.1:8000",
+  "client_host": "Darwin arm64 arm",
+  "python": "3.11.15",
+  "method": "client-side wall time per request; warm-up excluded",
+  "results": [
+    {
+      "scenario": "predict",
+      "concurrency": 1,
+      "requests": 10,
+      "errors": 0,
+      "rps": 0.6,
+      "mean_ms": 1560.4,
+      "min_ms": 1433.0,
+      "p50_ms": 1554.2,
+      "p95_ms": 1740.3,
+      "p99_ms": 1764.2,
+      "max_ms": 1770.2
+    },
+    {
+      "scenario": "predict_red_flag",
+      "concurrency": 1,
+      "requests": 10,
+      "errors": 0,
+      "rps": 14.9,
+      "mean_ms": 67.0,
+      "min_ms": 58.9,
+      "p50_ms": 62.4,
+      "p95_ms": 87.3,
+      "p99_ms": 93.2,
+      "max_ms": 94.6
+    },
+    {
+      "scenario": "chat_health",
+      "concurrency": 1,
+      "requests": 10,
+      "errors": 0,
+      "rps": 0.8,
+      "mean_ms": 1245.2,
+      "min_ms": 1005.9,
+      "p50_ms": 1175.0,
+      "p95_ms": 1639.6,
+      "p99_ms": 1643.6,
+      "max_ms": 1644.6
+    },
+    {
+      "scenario": "chat_general",
+      "concurrency": 1,
+      "requests": 10,
+      "errors": 0,
+      "rps": 0.7,
+      "mean_ms": 1513.6,
+      "min_ms": 1159.5,
+      "p50_ms": 1546.0,
+      "p95_ms": 1804.4,
+      "p99_ms": 1909.9,
+      "max_ms": 1936.3
+    },
+    {
+      "scenario": "wellness",
+      "concurrency": 1,
+      "requests": 10,
+      "errors": 0,
+      "rps": 1.0,
+      "mean_ms": 1035.0,
+      "min_ms": 921.2,
+      "p50_ms": 995.2,
+      "p95_ms": 1178.1,
+      "p99_ms": 1186.9,
+      "max_ms": 1189.1
+    }
+  ]
+}

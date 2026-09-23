@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-23T20:05:03.227092+00:00",
+  "method": "fresh local Python process; excludes Lambda image-pull/platform initialization",
+  "model_dir": "models/transformer_model_onnx",
+  "sample_count": 5,
+  "median_startup_ms": 179.87,
+  "max_startup_ms": 196.0,
+  "samples": [
+    {
+      "startup_ms": 193.79,
+      "max_rss_raw": 222445568,
+      "platform": "Darwin",
+      "model_version": "2026-07-09"
+    },
+    {
+      "startup_ms": 179.4,
+      "max_rss_raw": 252805120,
+      "platform": "Darwin",
+      "model_version": "2026-07-09"
+    },
+    {
+      "startup_ms": 179.87,
+      "max_rss_raw": 231981056,
+      "platform": "Darwin",
+      "model_version": "2026-07-09"
+    },
+    {
+      "startup_ms": 196.0,
+      "max_rss_raw": 233144320,
+      "platform": "Darwin",
+      "model_version": "2026-07-09"
+    },
+    {
+      "startup_ms": 170.09,
+      "max_rss_raw": 238616576,
+      "platform": "Darwin",
+      "model_version": "2026-07-09"
+    }
+  ]
+}

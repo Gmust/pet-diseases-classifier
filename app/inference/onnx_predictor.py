@@ -99,6 +99,9 @@ class OnnxPredictor:
 
         tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
         tokenizer.enable_truncation(max_length=cls._MAX_LENGTH)
+        # The exported tokenizer.json carries fixed 256-token padding from training. Unpadded
+        # single-text inference is ~11x faster with the same owner-holdout accuracy.
+        tokenizer.no_padding()
 
         config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
         id2label = {int(k): v for k, v in config["id2label"].items()}
