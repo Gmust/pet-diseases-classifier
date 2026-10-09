@@ -105,8 +105,15 @@ def main() -> None:
     print("Applying int8 dynamic quantization …")
     # Per-channel weight scales: per-tensor int8 flipped ~5% of BERT-base labels
     # versus fp32 (ADR 0004); per-channel keeps accuracy and narrows the gap.
+    # reduce_range (7-bit weights) is required with per-channel: on x86 AVX2
+    # without VNNI (the Lambda hosts), the U8S8 kernel saturates int16 sums and the
+    # model collapsed to one class at ~0.16 confidence. ARM never shows this.
     quantize_dynamic(
-        str(model_onnx), str(quant_onnx), weight_type=QuantType.QInt8, per_channel=True
+        str(model_onnx),
+        str(quant_onnx),
+        weight_type=QuantType.QInt8,
+        per_channel=True,
+        reduce_range=True,
     )
 
     # Drop the fp32 intermediate so the deploy image only ships the int8 model.
