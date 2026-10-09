@@ -103,7 +103,11 @@ def main() -> None:
 
     quant_onnx = out / "model_quantized.onnx"
     print("Applying int8 dynamic quantization …")
-    quantize_dynamic(str(model_onnx), str(quant_onnx), weight_type=QuantType.QInt8)
+    # Per-channel weight scales: per-tensor int8 flipped ~5% of BERT-base labels
+    # versus fp32 (ADR 0004); per-channel keeps accuracy and narrows the gap.
+    quantize_dynamic(
+        str(model_onnx), str(quant_onnx), weight_type=QuantType.QInt8, per_channel=True
+    )
 
     # Drop the fp32 intermediate so the deploy image only ships the int8 model.
     if not args.keep_fp32 and model_onnx.name == "model.onnx" and model_onnx.exists():

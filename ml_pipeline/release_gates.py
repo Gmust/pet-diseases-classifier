@@ -308,7 +308,7 @@ def main() -> int:
     parity = subparsers.add_parser("parity", help="Compare Torch and ONNX bundles.")
     parity.add_argument("--torch-model", default="models/transformer_model")
     parity.add_argument("--onnx-model", default="models/transformer_model_onnx")
-    parity.add_argument("--data", default="data/owner_eval.parquet")
+    parity.add_argument("--data", default="data/owner_eval_real.parquet")
     parity.add_argument("--label-map", default="data/label_map.json")
     parity.add_argument("--batch-size", type=int, default=32)
     parity.add_argument("--output-json", default=None)
