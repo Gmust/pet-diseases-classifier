@@ -39,3 +39,45 @@ def test_from_paths_runs_unpadded_inputs(tmp_path, monkeypatch):
     OnnxPredictor.from_paths(str(tmp_path)).predict("dog dog")
 
     assert shapes == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("graph_inputs", "expects_type_ids"),
+    [
+        (["input_ids", "attention_mask", "token_type_ids"], True),
+        (["input_ids", "attention_mask"], False),
+    ],
+)
+def test_feeds_token_type_ids_only_to_graphs_that_declare_them(
+    tmp_path, monkeypatch, graph_inputs, expects_type_ids
+):
+    vocab = {"[PAD]": 0, "[UNK]": 1, "dog": 2}
+    tok = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
+    tok.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    tok.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "config.json").write_text(json.dumps({"id2label": {"0": "A", "1": "B"}}))
+    (tmp_path / "model.onnx").write_bytes(b"")
+
+    feeds = []
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_inputs(self):
+            return [SimpleNamespace(name=name) for name in graph_inputs]
+
+        def run(self, _outputs, feed):
+            missing = set(graph_inputs) - set(feed)
+            if missing:
+                raise ValueError(f"Required inputs {sorted(missing)} are missing")
+            feeds.append(set(feed))
+            return [np.zeros((feed["input_ids"].shape[0], 2))]
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=FakeSession))
+    predictor = OnnxPredictor.from_paths(str(tmp_path))
+
+    predictor.predict("dog")
+    predictor.predict_batch(["dog", "dog dog"])
+
+    assert all(("token_type_ids" in feed) is expects_type_ids for feed in feeds)
