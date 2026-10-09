@@ -73,6 +73,11 @@ Parameters worth setting at deploy:
 - `FunctionMemory` — defaults to `1769` MB (approximately one full vCPU).
 - `ApiRateLimit` / `ApiBurstLimit` — gateway throttling (defaults 20 / 40).
 
+Upgrading a stack deployed before `ReservedConcurrency` was removed: `--guided`
+saved it in the local `samconfig.toml`, and SAM rejects an override for a parameter
+the template no longer declares. Delete `ReservedConcurrency="..."` from
+`parameter_overrides` before the next `sam deploy`.
+
 The template already points at `Dockerfile.lambda.onnx` and sets
 `MODEL_BACKEND=onnx`, `MODEL_PATH=models/transformer_model_onnx`,
 `MemorySize=1769`, and `Timeout=60` by default.
@@ -119,7 +124,7 @@ benchmark of the checked-in local ONNX artifact recorded a 178 ms median and
 image-pull or platform initialization, so production p95 init duration must be
 monitored in CloudWatch. Scheduled invocations do not guarantee reuse of the
 container that receives user traffic. If the measured production cold-start SLO
-is missed, use provisioned concurrency on the `live` alias rather than restoring
+is missed, publish an alias with provisioned concurrency rather than restoring
 an unreliable keep-warm schedule.
 
 ## Notes

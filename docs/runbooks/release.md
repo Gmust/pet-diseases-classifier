@@ -15,6 +15,9 @@
 4. Deploy the exact image digest through SAM. Confirm `/health/ready` reports
    the expected backend/version and run `BASE=<url> API_KEY=<key> scripts/smoke_test.sh`.
 5. Watch Lambda Errors, Throttles, duration, fallback, abstention, and red-flag
-   events through the post-deployment observation window. If an alarm fires,
-   perform the operator-driven procedure in `docs/runbooks/rollback.md`; the
-   current stack does not configure automatic rollback.
+   events through the post-deployment observation window: 15 minutes of
+   production traffic after the smoke test passes. The deployment is healthy when
+   the Errors and Throttles alarms stay `OK` for the whole window and fallback,
+   abstention, and red-flag rates stay at their pre-deploy baseline. If an alarm
+   fires, perform the operator-driven procedure in `docs/runbooks/rollback.md`;
+   the current stack does not configure automatic rollback.

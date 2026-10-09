@@ -8,8 +8,8 @@
    python -m app.inference.model_registry /path/to/registry/releases/<rollback-version>
    ```
 
-3. Redeploy the image digest previously recorded for that immutable version, or
-   move the Lambda `live` alias to the previous healthy version.
+3. Redeploy the image digest previously recorded for that immutable version. The
+   stack publishes no Lambda alias, so there is no alias to move back.
 4. Verify `/health/ready` reports the rollback version, execute the smoke test,
    and confirm Errors plus inference-failure metrics return to baseline.
 5. Preserve the faulty artifact/evidence, block its channel promotion, and open

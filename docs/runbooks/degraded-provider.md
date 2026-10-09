@@ -11,4 +11,4 @@ leave deterministic triage available.
    stable status codes, and normal classifier readiness.
 4. Restore generation only after provider calls meet timeout/error thresholds;
    deploy the reviewed image and monitor fallback counts through the full
-   post-deployment observation window.
+   post-deployment observation window (`docs/runbooks/release.md`, step 5).
