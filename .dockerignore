@@ -13,6 +13,10 @@ data/
 models/classifier.joblib
 models/vectorizer.joblib
 
+# Rollback backups and unpromoted candidates kept next to the live bundles
+models/release-*/
+models/candidate-*/
+
 # Git
 .git/
 .gitignore
