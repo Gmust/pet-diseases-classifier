@@ -12,6 +12,7 @@ import logging
 
 from app.app_services import AppServices
 from app.config import Settings, get_settings
+from app.inference.model_validation import ModelValidationError
 from app.inference.predictor import Predictor
 from app.inference.protocols import Classifier
 from app.llm.gemini_service import GeminiService
@@ -22,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 # Unambiguous owner texts any acceptable model classifies correctly. A model can
 # load cleanly and still collapse on the runtime CPU (ADR 0004: per-channel int8
-# saturating on the Lambda AVX2 hosts sent every input to one class), so readiness
-# reports a failed canary instead of letting that pass silently.
+# saturating on the Lambda AVX2 hosts sent every input to one class), so a missed
+# canary fails startup: every route then errors and the Errors alarm fires, instead
+# of /predict and /chat silently serving one class.
 MODEL_CANARY: tuple[tuple[str, str], ...] = (
     ("My dog has been vomiting and has had diarrhea since yesterday.", "Digestive Issues"),
     ("My cat keeps shaking her head and scratching at her ears.", "Ear Conditions"),
@@ -58,28 +60,8 @@ def build_services(settings: Settings | None = None) -> AppServices:
     else:
         predictor = Predictor.from_paths(model_path=settings.model_path)
 
+    metadata = predictor.metadata
     canary_failures = failed_canaries(predictor)
-    gemini_api_keys = settings.resolved_gemini_api_keys()
-    services = AppServices(
-        predictor=predictor,
-        model_canary_passed=not canary_failures,
-        gemini_service=GeminiService(api_keys=gemini_api_keys, model_name=settings.gemini_model),
-        wellness_service=WellnessService(
-            api_keys=gemini_api_keys, model_name=settings.gemini_model
-        ),
-        low_confidence_threshold=settings.low_confidence_threshold,
-        # When true, /predict serves a cautious templated explanation instead of
-        # calling Gemini — zero per-request API cost. See README / cost notes.
-        use_static_explanations=settings.use_static_explanations,
-    )
-    metadata = services.predictor.metadata
-    log_event(
-        "model_loaded",
-        backend=metadata.backend,
-        model_version=metadata.model_version,
-        label_count=len(metadata.labels),
-        canary_passed=not canary_failures,
-    )
     if canary_failures:
         logger.error(
             "model_canary_failed",
@@ -91,4 +73,27 @@ def build_services(settings: Settings | None = None) -> AppServices:
                 }
             },
         )
+        raise ModelValidationError(
+            f"Model {metadata.model_version} misclassified canary texts: {canary_failures}"
+        )
+
+    gemini_api_keys = settings.resolved_gemini_api_keys()
+    services = AppServices(
+        predictor=predictor,
+        gemini_service=GeminiService(api_keys=gemini_api_keys, model_name=settings.gemini_model),
+        wellness_service=WellnessService(
+            api_keys=gemini_api_keys, model_name=settings.gemini_model
+        ),
+        low_confidence_threshold=settings.low_confidence_threshold,
+        # When true, /predict serves a cautious templated explanation instead of
+        # calling Gemini — zero per-request API cost. See README / cost notes.
+        use_static_explanations=settings.use_static_explanations,
+    )
+    log_event(
+        "model_loaded",
+        backend=metadata.backend,
+        model_version=metadata.model_version,
+        label_count=len(metadata.labels),
+        canary_passed=True,
+    )
     return services

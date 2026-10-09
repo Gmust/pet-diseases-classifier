@@ -15,8 +15,8 @@
 3. Require green model regression, safety, parity, container scan/size, and
    release-evidence jobs. Download and retain the evidence artifact.
 4. Deploy the exact image digest through SAM. Confirm `/health/ready` returns
-   `ready` with the expected backend/version (a model that loads but misclassifies
-   the built-in canary returns 503 `model_canary_failed` — roll back) and run
+   `ready` with the expected backend/version (a model that misclassifies the
+   built-in canary fails startup and logs `model_canary_failed` — roll back) and run
    `BASE=<url> API_KEY=<key> scripts/smoke_test.sh`. Parity on a CPU other than
    the runtime's is not evidence (ADR 0004): check x86 with AVX2, e.g. Docker
    `--platform linux/amd64` with Rosetta emulation off.

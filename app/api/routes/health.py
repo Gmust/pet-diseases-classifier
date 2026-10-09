@@ -25,9 +25,6 @@ def readiness(request: Request, response: Response) -> dict[str, object]:
     if services is None:
         response.status_code = 503
         return {"status": "not_ready", "reason": "model_not_loaded"}
-    if not services.model_canary_passed:
-        response.status_code = 503
-        return {"status": "not_ready", "reason": "model_canary_failed"}
     meta = services.predictor.metadata
     return {
         "status": "ready",

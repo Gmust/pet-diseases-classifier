@@ -30,6 +30,24 @@ import shutil
 from pathlib import Path
 
 
+def quantize_int8(model_onnx: Path, quant_onnx: Path) -> None:
+    """int8 dynamic quantization (pure onnxruntime — no torch, no ORTModel)."""
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    # Per-channel weight scales: per-tensor int8 flipped ~5% of BERT-base labels
+    # versus fp32 (ADR 0004); per-channel keeps accuracy and narrows the gap.
+    # reduce_range (7-bit weights) is required with per-channel: on x86 AVX2
+    # without VNNI (the Lambda hosts), the U8S8 kernel saturates int16 sums and the
+    # model collapsed to one class at ~0.16 confidence. ARM never shows this.
+    quantize_dynamic(
+        str(model_onnx),
+        str(quant_onnx),
+        weight_type=QuantType.QInt8,
+        per_channel=True,
+        reduce_range=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export model to quantized ONNX.")
     parser.add_argument(
@@ -98,23 +116,9 @@ def main() -> None:
         print(f"Done (fp32 ONNX). Saved to: {out}  ({model_onnx.name})")
         return
 
-    # --- int8 dynamic quantization (pure onnxruntime — no torch, no ORTModel) ---
-    from onnxruntime.quantization import QuantType, quantize_dynamic
-
     quant_onnx = out / "model_quantized.onnx"
     print("Applying int8 dynamic quantization …")
-    # Per-channel weight scales: per-tensor int8 flipped ~5% of BERT-base labels
-    # versus fp32 (ADR 0004); per-channel keeps accuracy and narrows the gap.
-    # reduce_range (7-bit weights) is required with per-channel: on x86 AVX2
-    # without VNNI (the Lambda hosts), the U8S8 kernel saturates int16 sums and the
-    # model collapsed to one class at ~0.16 confidence. ARM never shows this.
-    quantize_dynamic(
-        str(model_onnx),
-        str(quant_onnx),
-        weight_type=QuantType.QInt8,
-        per_channel=True,
-        reduce_range=True,
-    )
+    quantize_int8(model_onnx, quant_onnx)
 
     # Drop the fp32 intermediate so the deploy image only ships the int8 model.
     if not args.keep_fp32 and model_onnx.name == "model.onnx" and model_onnx.exists():

@@ -47,5 +47,6 @@ Exports now use per-channel weights with `reduce_range=True` (7-bit), which
 removes the saturation (AVX2: 0.975 label agreement; Apple Silicon parity 0.970,
 accuracy 0.875 vs 0.876 Torch). Parity measured on a different CPU than the
 runtime is not evidence, so the service also runs three unambiguous canary texts
-after loading the model; a miss logs `model_canary_failed` and makes
-`/health/ready` return 503.
+after loading the model; a miss logs `model_canary_failed` and fails startup, so
+every route returns a 5xx and the Errors alarm fires rather than `/predict` and
+`/chat` silently serving one class.
