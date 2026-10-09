@@ -652,6 +652,34 @@ python -m ml_pipeline.fetch_and_merge
 Combines: local base data + VetPetCare (free HF dataset) + synthetic data.
 Output: `data/merged_augmented.parquet`
 
+### Step 2b — Text-based labels and real owner questions (Claude)
+
+Labels follow [`docs/labeling-guide.md`](docs/labeling-guide.md): a row's category is what
+its text supports. `ml_pipeline.claude_labeling` runs Message Batches (needs
+`ANTHROPIC_API_KEY`; without `--submit` it only prints a cost estimate):
+
+```bash
+L="python -m ml_pipeline.claude_labeling"
+$L label --input data/train_balanced.parquet --id-col row_id --variant a \
+  --out data/train_labels_a.parquet --submit                      # relabel existing rows
+$L label --input data/brb_questions.parquet --id-col row_id --variant a \
+  --out data/brb_labels_a.parquet --submit                        # real owner questions
+$L label --input data/brb_questions.parquet --id-col row_id --variant b \
+  --keep-usable-from data/brb_labels_a.parquet \
+  --out data/brb_labels_b.parquet --submit                        # independent 2nd pass
+$L generate --rows 30 --classes "Blood Disorders=300" ... \
+  --out data/claude_gen_raw.parquet --submit                      # weak-class rows
+$L label --input data/claude_gen_raw.parquet --id-col row_id --variant b \
+  --out data/claude_gen_labels_b.parquet --submit                 # blind check
+python -m ml_pipeline.build_claude_dataset
+```
+
+`data/brb_questions.parquet` holds the `question` column of
+[Big Red Bark Chat](https://huggingface.co/datasets/Sr523/big-red-bark-chat-evaluation) (MIT)
+with `row_id` `brb-NNNNN`.
+Outputs: `data/train_claude.parquet` (train) and `data/owner_eval_real.parquet` (real owner
+questions on which both passes agree; the primary holdout). Train with `--max-length 128`.
+
 ### Step 3 — Train
 
 ```bash

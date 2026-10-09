@@ -2,7 +2,9 @@
 
 1. Publish `model-bundle-<version>` from a trusted workflow. It must contain
    `transformer_model/`, `transformer_model_onnx/`, both immutable manifests,
-   `transformer_model/MODEL_CARD.md`, and `DATA_CARD.md`.
+   `transformer_model/MODEL_CARD.md`, `DATA_CARD.md`, and the parity holdout
+   `owner_eval_real.parquet` at the bundle root (the images copy only the model
+   directories, so it never ships).
 2. Record the producing workflow run id, then run:
 
    ```bash

@@ -127,8 +127,10 @@ class OnnxPredictor:
         feed = {
             "input_ids": np.array([encoding.ids], dtype=np.int64),
             "attention_mask": np.array([encoding.attention_mask], dtype=np.int64),
+            "token_type_ids": np.array([encoding.type_ids], dtype=np.int64),
         }
-        # Only pass inputs the graph actually declares (DistilBERT has no token_type_ids).
+        # Only pass inputs the graph actually declares: BERT graphs require
+        # token_type_ids, DistilBERT graphs reject it.
         feed = {k: v for k, v in feed.items() if k in self._input_names}
         outputs = self._session.run(None, feed)
         return np.asarray(outputs[0])[0]
@@ -187,6 +189,7 @@ class OnnxPredictor:
                     "attention_mask": np.array(
                         [e.attention_mask for e in encodings], dtype=np.int64
                     ),
+                    "token_type_ids": np.array([e.type_ids for e in encodings], dtype=np.int64),
                 }
                 feed = {k: v for k, v in feed.items() if k in self._input_names}
                 outputs = self._session.run(None, feed)
