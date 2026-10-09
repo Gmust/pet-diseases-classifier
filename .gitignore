@@ -51,6 +51,7 @@ models/
 # Training and data artifacts (large binaries — keep small JSON like label_map.json)
 data/*.parquet
 data/*.csv
+data/*.batch.json
 !data/label_map.json
 
 # OS and editor files

@@ -54,6 +54,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    DataCollatorWithPadding,
     get_linear_schedule_with_warmup,
 )
 
@@ -269,17 +270,14 @@ class PetConditionDataset(Dataset):
         return len(self.texts)
 
     def __getitem__(self, idx: int) -> dict:
-        encoding = self.tokenizer(
-            self.texts[idx],
-            truncation=True,
-            max_length=self.max_length,
-            padding="max_length",
-            return_tensors="pt",
-        )
+        # No padding here: the collator pads each batch to its longest row. Owner
+        # texts are ~20 words, so padding every row to max_length wasted ~90% of
+        # the compute.
+        encoding = self.tokenizer(self.texts[idx], truncation=True, max_length=self.max_length)
         return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
+            "input_ids": encoding["input_ids"],
+            "attention_mask": encoding["attention_mask"],
+            "labels": self.labels[idx],
         }
 
 
@@ -457,9 +455,18 @@ def train_and_save(
     val_dataset = PetConditionDataset(x_val, y_val, tokenizer, max_length)
     test_dataset = PetConditionDataset(x_test, y_test, tokenizer, max_length)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0)
+    # A few fixed batch shapes instead of one per batch: MPS recompiles kernels
+    # for every new sequence length, which made epochs several times slower.
+    collate = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=32)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, collate_fn=collate
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0, collate_fn=collate
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0, collate_fn=collate
+    )
 
     # --- Model ---
     num_classes = len(unique_labels)

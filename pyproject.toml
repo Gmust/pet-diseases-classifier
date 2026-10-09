@@ -47,6 +47,7 @@ onnx-runtime = [
 ]
 train = [
     "accelerate==0.34.2",
+    "anthropic==1.8.0",
     "datasets==2.21.0",
     "numpy==1.26.4",
     "pandas==2.2.2",
@@ -125,6 +126,7 @@ exclude = ["^\\.aws-sam/", "^graphify-out/"]
 
 [[tool.mypy.overrides]]
 module = [
+    "anthropic.*",
     "datasets.*",
     "google.*",
     "mangum.*",
