@@ -71,16 +71,17 @@ Parameters worth setting at deploy:
 - `RuntimeSecretId` — a Secrets Manager secret containing non-empty `API_KEY`
   and `GEMINI_API_KEY` JSON fields. Production startup rejects missing auth.
 - `FunctionMemory` — defaults to `1769` MB (approximately one full vCPU).
-- `ReservedConcurrency` — defaults to `2` to bound memory/provider traffic.
 - `ApiRateLimit` / `ApiBurstLimit` — gateway throttling (defaults 20 / 40).
 
 The template already points at `Dockerfile.lambda.onnx` and sets
 `MODEL_BACKEND=onnx`, `MODEL_PATH=models/transformer_model_onnx`,
 `MemorySize=1769`, and `Timeout=60` by default.
 
-Deployments publish a `live` alias using a 10%/5-minute canary. Lambda errors
-automatically roll the deployment back. X-Ray is active, Lambda logs are retained
-for 30 days, and CloudWatch alarms cover errors and sustained throttling.
+The current stack updates the Lambda function directly; this AWS account is not
+yet provisioned for reserved concurrency or CodeDeploy canaries. X-Ray is active,
+Lambda logs are retained for 30 days, and CloudWatch alarms cover errors and
+sustained throttling. Treat an alarm as a signal for the operator-driven rollback
+described below.
 
 After deploy, SAM prints the `ApiUrl` output.
 

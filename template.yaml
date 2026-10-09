@@ -37,12 +37,6 @@ Parameters:
     Description: "Lambda memory (MB). 1769 = a full vCPU, which roughly halves cold-start init time
       vs 1024 (~0.5 vCPU) and is often cheaper per request since duration drops faster than memory rises."
 
-  ReservedConcurrency:
-    Type: Number
-    Default: 2
-    MinValue: 1
-    Description: Maximum concurrent executions, bounding model memory and provider traffic
-
 # ── Shared defaults for all Lambda functions ───────────────────────────────
 Globals:
   Function:

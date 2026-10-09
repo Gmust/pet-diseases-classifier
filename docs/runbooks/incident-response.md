@@ -8,7 +8,7 @@
 3. Measure Lambda Errors/Throttles/duration, readiness version, fallback reasons,
    abstentions, and red-flag rates. Correlate by request id only.
 4. Validate recovery with readiness plus `scripts/smoke_test.sh`; monitor through
-   one full canary/traffic window.
+   one full post-deployment traffic observation window.
 5. Document scope, timeline, root cause, affected versions, data exposure,
    corrective tests, and owners. Update runbooks/ADRs and notify affected parties
    according to legal/privacy obligations.
