@@ -23,6 +23,7 @@ import argparse
 
 import pandas as pd
 
+from ml_pipeline.claude_labeling import GENERATED_SOURCE
 from ml_pipeline.dataset_schema import compute_row_id, normalize_text, validate_rows
 from ml_pipeline.synthetic_quality import apply_quality_gates
 
@@ -104,10 +105,10 @@ def build(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
     ]
     generated = apply_quality_gates(generated.reset_index(drop=True))
     generated = generated[~generated["needs_review"]].assign(
-        source="claude-generated", label_source="claude-gen+b"
+        source=GENERATED_SOURCE, label_source="claude-gen+b"
     )
     generated["row_id"] = [
-        compute_row_id(t, c, "claude-generated")
+        compute_row_id(t, c, GENERATED_SOURCE)
         for t, c in zip(generated["text"], generated["condition"], strict=True)
     ]
 

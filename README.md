@@ -664,7 +664,8 @@ $L label --input data/train_balanced.parquet --id-col row_id --variant a \
   --out data/train_labels_a.parquet --submit                      # relabel existing rows
 $L label --input data/brb_questions.parquet --id-col row_id --variant a \
   --out data/brb_labels_a.parquet --submit                        # real owner questions
-$L label --input data/brb_usable_a.parquet --id-col row_id --variant b \
+$L label --input data/brb_questions.parquet --id-col row_id --variant b \
+  --keep-usable-from data/brb_labels_a.parquet \
   --out data/brb_labels_b.parquet --submit                        # independent 2nd pass
 $L generate --rows 30 --classes "Blood Disorders=300" ... \
   --out data/claude_gen_raw.parquet --submit                      # weak-class rows
@@ -675,7 +676,7 @@ python -m ml_pipeline.build_claude_dataset
 
 `data/brb_questions.parquet` holds the `question` column of
 [Big Red Bark Chat](https://huggingface.co/datasets/Sr523/big-red-bark-chat-evaluation) (MIT)
-with `row_id` `brb-NNNNN`; `brb_usable_a.parquet` is the subset pass a marked usable.
+with `row_id` `brb-NNNNN`.
 Outputs: `data/train_claude.parquet` (train) and `data/owner_eval_real.parquet` (real owner
 questions on which both passes agree; the primary holdout). Train with `--max-length 128`.
 

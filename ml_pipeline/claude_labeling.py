@@ -29,6 +29,7 @@ Needs ANTHROPIC_API_KEY (or an `ant auth login` profile); .env is loaded.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import time
@@ -38,12 +39,13 @@ from typing import Any
 
 import pandas as pd
 
-from ml_pipeline.dataset_schema import CANONICAL_LABELS
+from ml_pipeline.dataset_schema import CANONICAL_LABELS, compute_row_id
 
 MODEL = "claude-opus-5-5"
 GUIDE_PATH = Path(__file__).resolve().parents[1] / "docs" / "labeling-guide.md"
 LABELS = sorted(CANONICAL_LABELS)
 RECORD_TYPE = "Synthetic Owner (Claude)"
+GENERATED_SOURCE = "claude-generated"
 # Batch prices for MODEL (USD per token) — half the standard $4 / $20 per MTok.
 _IN_PRICE, _OUT_PRICE = 2.0 / 1e6, 10.0 / 1e6
 _THINKING_TOKENS_EST = 2000
@@ -233,6 +235,24 @@ def parse_rows(message: Any) -> list[dict] | None:
         return None
 
 
+def request_fingerprint(requests: Sequence[Any]) -> str:
+    return hashlib.sha256(json.dumps(list(requests), sort_keys=True).encode()).hexdigest()
+
+
+def resumable_batch_id(state_path: Path, fingerprint: str) -> str | None:
+    """The saved batch id, or None when there is none. Refuses state saved for
+    different requests: resuming it would pair old results with new specs."""
+    if not state_path.exists():
+        return None
+    state = json.loads(state_path.read_text())
+    if state.get("fingerprint") != fingerprint:
+        raise SystemExit(
+            f"{state_path} belongs to a batch built from different requests "
+            "(classes, counts, prompts or input changed). Use another --out or delete it."
+        )
+    return str(state["batch_id"])
+
+
 def run_batch(requests: Sequence[Any], state_path: Path) -> dict[str, Any]:
     """Submit (or resume) a batch and return {custom_id: message} for successes.
 
@@ -243,12 +263,13 @@ def run_batch(requests: Sequence[Any], state_path: Path) -> dict[str, Any]:
     import anthropic
 
     client = anthropic.Anthropic()
-    if state_path.exists():
-        batch_id = json.loads(state_path.read_text())["batch_id"]
+    fingerprint = request_fingerprint(requests)
+    batch_id = resumable_batch_id(state_path, fingerprint)
+    if batch_id:
         print(f"Resuming batch {batch_id}")
     else:
         batch_id = client.messages.batches.create(requests=requests).id
-        state_path.write_text(json.dumps({"batch_id": batch_id}))
+        state_path.write_text(json.dumps({"batch_id": batch_id, "fingerprint": fingerprint}))
         print(f"Submitted batch {batch_id} ({len(requests)} requests)")
     while (batch := client.messages.batches.retrieve(batch_id)).processing_status != "ended":
         counts = batch.request_counts
@@ -282,6 +303,10 @@ def _run(requests: list[dict], args: argparse.Namespace, out_tokens: int) -> dic
 def cmd_label(args: argparse.Namespace) -> None:
     df = _load(args.input).dropna(subset=[args.text_col])
     ids = df[args.id_col].astype(str) if args.id_col else df.index.astype(str)
+    if args.keep_usable_from:
+        prior = pd.read_parquet(args.keep_usable_from)
+        keep = ids.isin(prior.loc[prior["usable"].eq(True), "id"].astype(str))
+        df, ids = df[keep.to_numpy()], ids[keep.to_numpy()]
     requests, members = build_label_requests(
         list(ids), df[args.text_col].astype(str).tolist(), args.variant, args.rows, args.effort
     )
@@ -306,6 +331,25 @@ def cmd_label(args: argparse.Namespace) -> None:
     print(f"Labeled {len(labels)}/{len(ids)} rows → {args.out}")
 
 
+def generated_rows(messages: dict[str, Any], specs: dict[str, dict]) -> pd.DataFrame:
+    """Deduplicated generated rows with a content-derived `row_id`, so the blind
+    re-label (`label --id-col row_id`) and the dataset build can key on it."""
+    records = [
+        {"text": row["text"].strip(), **specs[custom_id]}
+        for custom_id, message in messages.items()
+        for row in parse_rows(message) or []
+        if row.get("text", "").strip()
+    ]
+    out = pd.DataFrame(records).drop_duplicates(subset="text")
+    out["record_type"] = RECORD_TYPE
+    out["generated_by"] = MODEL
+    out["row_id"] = [
+        compute_row_id(t, c, GENERATED_SOURCE)
+        for t, c in zip(out["text"], out["condition"], strict=True)
+    ]
+    return out.reset_index(drop=True)
+
+
 def cmd_generate(args: argparse.Namespace) -> None:
     targets = {}
     for spec in args.classes:
@@ -317,15 +361,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
     messages = _run(requests, args, out_tokens=args.rows * 45)
     if messages is None:
         return
-    records = [
-        {"text": row["text"].strip(), **specs[custom_id]}
-        for custom_id, message in messages.items()
-        for row in parse_rows(message) or []
-        if row.get("text", "").strip()
-    ]
-    out = pd.DataFrame(records).drop_duplicates(subset="text")
-    out["record_type"] = RECORD_TYPE
-    out["generated_by"] = MODEL
+    out = generated_rows(messages, specs)
     out.to_parquet(args.out, index=False)
     print(f"Generated {len(out)} rows → {args.out}")
 
@@ -343,6 +379,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             s.add_argument("--input", required=True)
             s.add_argument("--text-col", default="text")
             s.add_argument("--id-col", default=None)
+            s.add_argument(
+                "--keep-usable-from",
+                default=None,
+                help="Labels parquet from an earlier pass; label only the rows it marked usable.",
+            )
             s.add_argument("--variant", choices=sorted(_LABEL_TASK), default="a")
         else:
             s.add_argument("--classes", nargs="+", required=True, help='"Category=count"')
