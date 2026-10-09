@@ -44,7 +44,6 @@ def deployment_expectations(template: dict, documentation: str) -> list[str]:
     retention = template["Resources"]["PetCareAiFunctionLogGroup"]["Properties"]["RetentionInDays"]
     expected = (
         f"defaults to `{parameters['FunctionMemory']['Default']}` MB",
-        f"defaults to `{parameters['ReservedConcurrency']['Default']}`",
         f"`Timeout={timeout}`",
         f"for {retention} days",
     )

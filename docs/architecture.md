@@ -61,8 +61,10 @@ version, and label count.
 `.github/workflows/ci.yml` handles fast/data evidence. `model-release.yml`
 retrieves a run-ID-addressed immutable model artifact and gates containers and
 promotion evidence. `template.yaml` deploys the ONNX Lambda image behind API
-Gateway using Secrets Manager values, bounded concurrency, tracing, retained
-logs, alarms, and canary rollback.
+Gateway using Secrets Manager values, gateway throttling, tracing, retained logs,
+and alarms. Deployments are direct updates with operator-driven rollback because
+the current AWS account is not provisioned for reserved concurrency or CodeDeploy
+canaries.
 
 ## Dependency direction
 
