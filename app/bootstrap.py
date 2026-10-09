@@ -20,6 +20,28 @@ from app.wellness.service import WellnessService
 
 logger = logging.getLogger(__name__)
 
+# Unambiguous owner texts any acceptable model classifies correctly. A model can
+# load cleanly and still collapse on the runtime CPU (ADR 0004: per-channel int8
+# saturating on the Lambda AVX2 hosts sent every input to one class), so readiness
+# reports a failed canary instead of letting that pass silently.
+MODEL_CANARY: tuple[tuple[str, str], ...] = (
+    ("My dog has been vomiting and has had diarrhea since yesterday.", "Digestive Issues"),
+    ("My cat keeps shaking her head and scratching at her ears.", "Ear Conditions"),
+    (
+        "My dog is limping on his back leg after jumping off the couch.",
+        "Musculoskeletal Conditions",
+    ),
+)
+
+
+def failed_canaries(predictor: Classifier) -> list[str]:
+    """Expected labels of the canary texts the predictor gets wrong."""
+    return [
+        expected
+        for text, expected in MODEL_CANARY
+        if predictor.predict(text).predicted_condition != expected
+    ]
+
 
 def build_services(settings: Settings | None = None) -> AppServices:
     """Load the model + services. Called at Lambda INIT (and by the keep-warm
@@ -36,9 +58,11 @@ def build_services(settings: Settings | None = None) -> AppServices:
     else:
         predictor = Predictor.from_paths(model_path=settings.model_path)
 
+    canary_failures = failed_canaries(predictor)
     gemini_api_keys = settings.resolved_gemini_api_keys()
     services = AppServices(
         predictor=predictor,
+        model_canary_passed=not canary_failures,
         gemini_service=GeminiService(api_keys=gemini_api_keys, model_name=settings.gemini_model),
         wellness_service=WellnessService(
             api_keys=gemini_api_keys, model_name=settings.gemini_model
@@ -54,5 +78,17 @@ def build_services(settings: Settings | None = None) -> AppServices:
         backend=metadata.backend,
         model_version=metadata.model_version,
         label_count=len(metadata.labels),
+        canary_passed=not canary_failures,
     )
+    if canary_failures:
+        logger.error(
+            "model_canary_failed",
+            extra={
+                "fields": {
+                    "event": "model_canary_failed",
+                    "model_version": metadata.model_version,
+                    "missed": canary_failures,
+                }
+            },
+        )
     return services

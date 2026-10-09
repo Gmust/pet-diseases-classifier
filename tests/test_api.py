@@ -401,3 +401,17 @@ def test_auth_enforced_when_api_key_set(client, monkeypatch):
     assert client.post("/predict", json=payload).status_code == 403
     ok = client.post("/predict", json=payload, headers={"X-API-Key": "secret"})
     assert ok.status_code == 200
+
+
+def test_readiness_reports_failed_canary(monkeypatch, client):
+    from app import main
+    from app.api import ensure_services
+
+    # A model that loads but answers the canary wrongly (e.g. collapsed on this CPU).
+    monkeypatch.setattr("app.bootstrap.MODEL_CANARY", (("my dog keeps vomiting", "Neoplasms"),))
+    main.app.state.services = None
+    ensure_services()
+    resp = client.get("/health/ready")
+
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "not_ready", "reason": "model_canary_failed"}

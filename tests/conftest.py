@@ -98,9 +98,14 @@ def client(monkeypatch, fake_predictor):
     # Patch model loading so the lifespan uses the fake (no torch, no weights).
     # Patched on the class itself, so it applies wherever app.bootstrap resolves it.
     monkeypatch.setattr(Predictor, "from_paths", classmethod(lambda cls, **kw: fake_predictor))
+    # The fake answers one fixed label, so give it a canary it passes.
+    monkeypatch.setattr(
+        "app.bootstrap.MODEL_CANARY", (("my dog keeps vomiting", fake_predictor.condition),)
+    )
     # ensure_services() caches on app.state and is idempotent, so reset it per test
     # to force a rebuild with THIS test's fake_predictor.
     main.app.state.services = None
 
     with TestClient(main.app) as test_client:
+        fake_predictor.last_input = None  # the startup canary is not a request
         yield test_client

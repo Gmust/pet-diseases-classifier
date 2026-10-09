@@ -21,4 +21,5 @@ class AppServices:
     gemini_service: GeminiService
     wellness_service: WellnessService
     low_confidence_threshold: float
+    model_canary_passed: bool = True
     use_static_explanations: bool = False
