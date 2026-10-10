@@ -33,3 +33,20 @@ good as the guide and Claude's reading of it; the holdout shares that labeler, s
 a veterinarian review of a holdout sample is the next trust step. The gate change
 applies to all future releases; revisit it if a smaller or distilled model can
 meet 0.99 again.
+
+## Addendum (2026-10-09): reduce_range and a runtime canary
+
+The first per-channel release (`2026-10-09`) passed parity on Apple Silicon and
+collapsed in production: every input became Neoplasms at ~0.16 confidence. On x86
+AVX2 hosts without VNNI (the Lambda fleet) ONNX Runtime's U8S8 kernel saturates
+int16 sums, and per-channel scales push every channel's weights to the full int8
+range. Reproduced under QEMU x86 emulation with AVX2 (Rosetta exposes only
+SSE4.2 and does not reproduce it); rolled back to `2026-07-09`.
+
+Exports now use per-channel weights with `reduce_range=True` (7-bit), which
+removes the saturation (AVX2: 0.975 label agreement; Apple Silicon parity 0.970,
+accuracy 0.875 vs 0.876 Torch). Parity measured on a different CPU than the
+runtime is not evidence, so the service also runs three unambiguous canary texts
+after loading the model; a miss logs `model_canary_failed` and fails startup, so
+every route returns a 5xx and the Errors alarm fires rather than `/predict` and
+`/chat` silently serving one class.

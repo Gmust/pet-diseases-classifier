@@ -401,3 +401,20 @@ def test_auth_enforced_when_api_key_set(client, monkeypatch):
     assert client.post("/predict", json=payload).status_code == 403
     ok = client.post("/predict", json=payload, headers={"X-API-Key": "secret"})
     assert ok.status_code == 200
+
+
+def test_startup_fails_when_model_misses_canary(monkeypatch, client):
+    import pytest
+
+    from app import main
+    from app.api import ensure_services
+    from app.inference.model_validation import ModelValidationError
+
+    # A model that loads but answers the canary wrongly (e.g. collapsed on this CPU)
+    # must not start serving: /predict and /chat would return one class for everything.
+    monkeypatch.setattr("app.bootstrap.MODEL_CANARY", (("my dog keeps vomiting", "Neoplasms"),))
+    main.app.state.services = None
+
+    with pytest.raises(ModelValidationError, match="canary"):
+        ensure_services()
+    assert main.app.state.services is None

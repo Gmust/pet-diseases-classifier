@@ -60,7 +60,9 @@ of model readiness.
 
 Model readiness probe. Returns `200` with non-sensitive `backend`,
 `modelVersion`, and `labelCount` metadata after successful model validation, or
-`503` with `reason=model_not_loaded` before services are ready.
+`503` with `reason=model_not_loaded` before services are ready. A model that
+loads but misclassifies the built-in canary texts never becomes ready: startup
+fails and every route returns a 5xx.
 
 ---
 
